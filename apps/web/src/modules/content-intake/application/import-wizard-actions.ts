@@ -1,17 +1,12 @@
 "use server";
 
-import { ZodError } from "zod";
 import { revalidatePath } from "next/cache";
+import { ZodError } from "zod";
 import { requireSession } from "@/modules/auth/application/auth-service";
 import { importContentItem } from "../application/import-content-item";
 import { normalizeSheetRow } from "../application/normalize-sheet-row";
-import {
-  buildNormalizeRequest,
-  getMockSheetRows,
-} from "../infrastructure/mock-import-provider";
-import { getLiveSheetRows } from "../infrastructure/google-sheets-provider";
-
-// ─── Shared types ─────────────────────────────────────────────────────────────
+import { getDriveImportSpreadsheetById, type DriveSourceContext } from "../infrastructure/drive-import-catalog";
+import { buildNormalizeRequest, getMockSheetRows } from "../infrastructure/mock-import-provider";
 
 export type RowOutcome =
   | "IMPORTED"
@@ -27,14 +22,21 @@ export interface PreviewRow {
   profile: string;
   contentType: "STATIC_POST" | "CAROUSEL";
   outcome: RowOutcome;
-  /** Short reason for non-imported rows. Empty for IMPORTED rows. */
   reason: string;
 }
 
-export interface PreviewResult {
-  sheetProfileKey: string;
+export interface DriveImportSource {
+  driveFileId: string;
+  spreadsheetId: string;
+  spreadsheetName: string;
   worksheetName: string;
-  orchestrator: string;
+  folderName: string;
+  sourceLabel: "Google Drive";
+  sourceContext: DriveSourceContext;
+}
+
+export interface PreviewResult {
+  source: DriveImportSource;
   rows: PreviewRow[];
   counts: {
     imported: number;
@@ -47,9 +49,7 @@ export interface PreviewResult {
 }
 
 export interface CommitResult {
-  sheetProfileKey: string;
-  worksheetName: string;
-  orchestrator: string;
+  source: DriveImportSource;
   counts: {
     imported: number;
     reprocessed: number;
@@ -62,56 +62,62 @@ export interface CommitResult {
   completedAt: string;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function safeNormalize(request: ReturnType<typeof buildNormalizeRequest>) {
   try {
     return { result: normalizeSheetRow(request), error: null };
-  } catch (err) {
+  } catch (error) {
     const message =
-      err instanceof ZodError
-        ? err.issues.map((i) => i.message).join("; ")
-        : err instanceof Error
-          ? err.message
+      error instanceof ZodError
+        ? error.issues.map((issue) => issue.message).join("; ")
+        : error instanceof Error
+          ? error.message
           : "Normalization failed.";
     return { result: null, error: message };
   }
 }
 
-// ─── Preview action ───────────────────────────────────────────────────────────
+function getDriveSelection(spreadsheetId: string) {
+  const spreadsheet = getDriveImportSpreadsheetById(spreadsheetId);
 
-export async function previewImportAction(
-  sheetProfileKey: string,
-  worksheetName: string,
-): Promise<PreviewResult> {
-  await requireSession();
-  
-  const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  let mockRows: any[] = [];
-  
-  if (serviceAccountEmail && sheetProfileKey === "yann-smm-plan") {
-    try {
-      mockRows = await getLiveSheetRows("1jjYpO7XxCBY2Jfe7hnqanS2H2EJDbbzs-P_BmkefLM4", worksheetName, "YANN");
-    } catch (err) {
-      console.error("Failed to read live sheet, falling back to mock:", err);
-      mockRows = getMockSheetRows(sheetProfileKey, worksheetName);
-    }
-  } else {
-    mockRows = getMockSheetRows(sheetProfileKey, worksheetName);
+  if (!spreadsheet) {
+    throw new Error(`Unsupported Drive spreadsheet selection: ${spreadsheetId}`);
   }
 
-  const rows: PreviewRow[] = await Promise.all(
-    mockRows.map(async (mockRow) => {
+  return spreadsheet;
+}
+
+function buildSource(spreadsheetId: string, worksheetName: string): DriveImportSource {
+  const spreadsheet = getDriveSelection(spreadsheetId);
+
+  return {
+    driveFileId: spreadsheet.driveFileId,
+    spreadsheetId: spreadsheet.spreadsheetId,
+    spreadsheetName: spreadsheet.spreadsheetName,
+    worksheetName,
+    folderName: spreadsheet.folderName,
+    sourceLabel: "Google Drive",
+    sourceContext: spreadsheet.sourceContext,
+  };
+}
+
+async function previewOrCommitSpreadsheet(
+  spreadsheetId: string,
+  worksheetName: string,
+  mode: "PREVIEW" | "COMMIT",
+) {
+  const spreadsheet = getDriveSelection(spreadsheetId);
+  const rows = getMockSheetRows(spreadsheet.sheetProfileKey, worksheetName);
+  const normalizedRows = await Promise.all(
+    rows.map(async (mockRow) => {
       const request = buildNormalizeRequest(
         mockRow,
-        sheetProfileKey,
+        spreadsheet.sheetProfileKey,
         worksheetName,
-        "PREVIEW",
+        mode,
       );
 
       const { result: normalized, error: normalizeError } = safeNormalize(request);
 
-      // If normalization itself fails (e.g. truly unrecoverable schema error), treat as REJECTED
       if (!normalized) {
         return {
           rowNumber: mockRow.rowNumber,
@@ -119,7 +125,7 @@ export async function previewImportAction(
           title: "(normalization error)",
           profile: mockRow.profile,
           contentType: mockRow.contentType,
-          outcome: "REJECTED" as RowOutcome,
+          outcome: "REJECTED" as const,
           reason: normalizeError ?? "Normalization failed.",
         };
       }
@@ -131,7 +137,6 @@ export async function previewImportAction(
         normalizedPayload.content.title ||
         "(no title)";
 
-      // SKIPPED: non-data row, no DB operation needed
       if (disposition === "SKIPPED_NON_DATA") {
         return {
           rowNumber: mockRow.rowNumber,
@@ -139,14 +144,13 @@ export async function previewImportAction(
           title: derivedTitle,
           profile: mockRow.profile,
           contentType: mockRow.contentType,
-          outcome: "SKIPPED",
+          outcome: "SKIPPED" as const,
           reason:
             normalizedPayload.normalization.rowQualification.reasons[0] ??
             "Non-data row detected.",
         };
       }
 
-      // REJECTED: failed field qualification
       if (disposition === "REJECTED_INVALID") {
         return {
           rowNumber: mockRow.rowNumber,
@@ -154,14 +158,13 @@ export async function previewImportAction(
           title: derivedTitle,
           profile: mockRow.profile,
           contentType: mockRow.contentType,
-          outcome: "REJECTED",
+          outcome: "REJECTED" as const,
           reason:
             normalizedPayload.normalization.rowQualification.reasons[0] ??
             "Row failed validation.",
         };
       }
 
-      // QUALIFIED: run through the import contract in PREVIEW mode
       const result = await importContentItem(normalizedPayload);
 
       let outcome: RowOutcome;
@@ -170,17 +173,16 @@ export async function previewImportAction(
       if ("duplicate" in result && result.duplicate) {
         if ("wouldUpdate" in result && result.wouldUpdate) {
           outcome = "REPROCESSED";
-          reason = "Matches an existing content item — will update.";
+          reason = "Matches an existing content item - will update.";
         } else {
           outcome = "DUPLICATE";
           reason = "Already processed for this idempotency key.";
         }
       } else if ("wouldUpdate" in result && result.wouldUpdate) {
         outcome = "REPROCESSED";
-        reason = "Matches existing source row — will reprocess.";
+        reason = "Matches existing source row - will reprocess.";
       } else {
         outcome = "IMPORTED";
-        reason = "";
       }
 
       return {
@@ -191,127 +193,61 @@ export async function previewImportAction(
         contentType: mockRow.contentType,
         outcome,
         reason,
+        receiptId: "receiptId" in result ? result.receiptId : null,
+        contentItemId:
+          "contentItemId" in result && typeof result.contentItemId === "string"
+            ? result.contentItemId
+            : null,
       };
     }),
   );
 
   const counts = {
-    imported: rows.filter((r) => r.outcome === "IMPORTED").length,
-    reprocessed: rows.filter((r) => r.outcome === "REPROCESSED").length,
-    duplicate: rows.filter((r) => r.outcome === "DUPLICATE").length,
-    skipped: rows.filter((r) => r.outcome === "SKIPPED").length,
-    rejected: rows.filter((r) => r.outcome === "REJECTED").length,
-    total: rows.length,
+    imported: normalizedRows.filter((row) => row.outcome === "IMPORTED").length,
+    reprocessed: normalizedRows.filter((row) => row.outcome === "REPROCESSED").length,
+    duplicate: normalizedRows.filter((row) => row.outcome === "DUPLICATE").length,
+    skipped: normalizedRows.filter((row) => row.outcome === "SKIPPED").length,
+    rejected: normalizedRows.filter((row) => row.outcome === "REJECTED").length,
+    total: normalizedRows.length,
   };
 
   return {
-    sheetProfileKey,
-    worksheetName,
-    orchestrator: "MANUAL",
-    rows,
+    source: buildSource(spreadsheetId, worksheetName),
+    rows: normalizedRows,
     counts,
+    receiptIds: mode === "COMMIT"
+      ? normalizedRows
+          .map((row) => row.receiptId)
+          .filter((receiptId): receiptId is string => Boolean(receiptId))
+      : [],
+    firstImportedItemId:
+      mode === "COMMIT"
+        ? normalizedRows.find((row) => typeof row.contentItemId === "string")?.contentItemId ?? null
+        : null,
   };
 }
 
-// ─── Commit action ────────────────────────────────────────────────────────────
+export async function previewImportAction(
+  spreadsheetId: string,
+  worksheetName: string,
+): Promise<PreviewResult> {
+  await requireSession();
+  return previewOrCommitSpreadsheet(spreadsheetId, worksheetName, "PREVIEW");
+}
 
 export async function commitImportAction(
-  sheetProfileKey: string,
+  spreadsheetId: string,
   worksheetName: string,
 ): Promise<CommitResult> {
   await requireSession();
-  
-  const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  let mockRows: any[] = [];
-  
-  if (serviceAccountEmail && sheetProfileKey === "yann-smm-plan") {
-    try {
-      mockRows = await getLiveSheetRows("1jjYpO7XxCBY2Jfe7hnqanS2H2EJDbbzs-P_BmkefLM4", worksheetName, "YANN");
-    } catch (err) {
-      console.error("Failed to read live sheet, falling back to mock:", err);
-      mockRows = getMockSheetRows(sheetProfileKey, worksheetName);
-    }
-  } else {
-    mockRows = getMockSheetRows(sheetProfileKey, worksheetName);
-  }
-
-  let imported = 0;
-  let reprocessed = 0;
-  let skipped = 0;
-  let rejected = 0;
-  const receiptIds: string[] = [];
-  let firstImportedItemId: string | null = null;
-
-  for (const mockRow of mockRows) {
-    const request = buildNormalizeRequest(
-      mockRow,
-      sheetProfileKey,
-      worksheetName,
-      "COMMIT",
-    );
-
-    const { result: normalized, error: normalizeError } = safeNormalize(request);
-
-    if (!normalized) {
-      // Normalization schema error — treat as rejected, no DB write
-      console.warn("Mock import: row normalization failed:", normalizeError);
-      rejected++;
-      continue;
-    }
-
-    const { normalizedPayload } = normalized;
-    const disposition = normalizedPayload.normalization.rowQualification.disposition;
-
-    if (disposition === "SKIPPED_NON_DATA") {
-      skipped++;
-      continue;
-    }
-
-    if (disposition === "REJECTED_INVALID") {
-      rejected++;
-      continue;
-    }
-
-    const result = await importContentItem(normalizedPayload);
-
-    if ("receiptId" in result) {
-      receiptIds.push(result.receiptId);
-    }
-
-    const isDuplicate = "duplicate" in result && result.duplicate;
-    const isReprocess =
-      "wouldUpdate" in result && result.wouldUpdate && !isDuplicate;
-
-    if (isDuplicate) {
-      // Duplicate commit — already processed, receipt already recorded
-      continue;
-    } else if (isReprocess) {
-      reprocessed++;
-    } else {
-      imported++;
-    }
-
-    const rec = result as Record<string, unknown>;
-    if (!firstImportedItemId && typeof rec.contentItemId === "string") {
-      firstImportedItemId = rec.contentItemId;
-    }
-  }
-
+  const result = await previewOrCommitSpreadsheet(spreadsheetId, worksheetName, "COMMIT");
   revalidatePath("/queue");
 
   return {
-    sheetProfileKey,
-    worksheetName,
-    orchestrator: "MANUAL",
-    counts: {
-      imported,
-      reprocessed,
-      skipped,
-      rejected,
-      total: mockRows.length,
-    },
-    receiptIds,
-    firstImportedItemId,
+    source: result.source,
+    counts: result.counts,
+    receiptIds: result.receiptIds,
+    firstImportedItemId: result.firstImportedItemId,
     completedAt: new Date().toISOString(),
   };
 }

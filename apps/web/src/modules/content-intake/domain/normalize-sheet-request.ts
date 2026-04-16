@@ -5,7 +5,7 @@ import { contentProfileSchema } from "./sheet-profiles";
 export const normalizeSheetRowRequestSchema = z.object({
   version: z.literal(1),
   mode: importModeSchema.default("PREVIEW"),
-  orchestrator: orchestratorTypeSchema,
+  orchestrator: orchestratorTypeSchema.default("MANUAL"),
   sheetProfileKey: z.string().min(1),
   source: z.object({
     spreadsheetId: z.string().min(1),

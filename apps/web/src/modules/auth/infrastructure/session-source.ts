@@ -41,7 +41,7 @@ export async function getRequestIdentity(): Promise<UserSession | null> {
         return {
           email: payload.email as string,
           roles: [],
-          mode: "cookie" as any, // extended
+          mode: "cookie",
         };
       }
     } catch {

@@ -103,7 +103,7 @@ export async function getLiveSheetRows(
       // Ensure idempotency uniqueness globally via row ID hashes tracking
       rowId: `sheet-${spreadsheetId}-${worksheetName}-row-${rowNumber}`,
       rowValues: safeRow,
-    } as any);
+    } as MockSheetRow);
   });
 
   return parsedRows;

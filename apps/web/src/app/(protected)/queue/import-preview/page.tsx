@@ -5,7 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 const sampleRequest = {
   version: 1,
   mode: "PREVIEW",
-  orchestrator: "MANUAL",
   sheetProfileKey: "zazmic-brazil-monthly-linkedin",
   source: {
     spreadsheetId: "zazmic-brazil-smm-plan",
@@ -55,14 +54,14 @@ export default function ImportPreviewPage() {
     <div className="space-y-8">
       <section className="space-y-3">
         <Badge className="rounded-full bg-sky-600 px-3 py-1 text-white hover:bg-sky-600">
-          Persistence checkpoint
+          Import checkpoint
         </Badge>
         <h1 className="max-w-4xl text-4xl font-semibold tracking-tight text-slate-950">
-          Preview and commit share one normalization flow before anything reaches Canva.
+          Preview and commit share one normalization flow after a Google Drive spreadsheet is selected.
         </h1>
         <p className="max-w-4xl text-base leading-7 text-slate-600">
           This slice keeps phase 1 inside Pipeline #1 and proves the persistence-backed flow for
-          normalized Google Sheets imports before any design adapter work begins.
+          normalized Google Drive spreadsheet imports before any downstream workflow work begins.
         </p>
       </section>
 
@@ -101,12 +100,12 @@ export default function ImportPreviewPage() {
             </CardHeader>
             <CardContent className="space-y-3 text-sm leading-6 text-slate-700">
               <p>
-                Use <code>mode: &quot;PREVIEW&quot;</code> to validate worksheet selection, header mapping,
+                Use <code>mode: &quot;PREVIEW&quot;</code> to validate spreadsheet selection, worksheet selection, header mapping,
                 row qualification, and title derivation with a persisted preview receipt only.
               </p>
               <p>
                 Change to <code>mode: &quot;COMMIT&quot;</code> to create or update the canonical content
-                item and link it to the Google Sheets row in the database.
+                item and link it to the Google Drive spreadsheet row in the database.
               </p>
             </CardContent>
           </Card>

@@ -75,7 +75,7 @@ export function AppShell({
                 className="rounded-full border-slate-200 bg-white px-2 py-0 text-[10px]"
                 style={{ color: "#64748B" }}
               >
-                {session.mode === "iap" ? "IAP" : "Dev"}
+                {session.mode === "iap" ? "IAP" : session.mode === "cookie" ? "Cookie" : "Dev"}
               </Badge>
             </div>
             <div>
@@ -100,7 +100,7 @@ export function AppShell({
           <header className="border-b border-slate-200/80 bg-white/80 px-4 py-2.5 backdrop-blur md:px-5 lg:px-6">
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs" style={{ color: "#94A3B8" }}>
-                Google Sheets → Platform → Canva → LinkedIn
+                Google Drive → Spreadsheet → Worksheet → Platform
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge

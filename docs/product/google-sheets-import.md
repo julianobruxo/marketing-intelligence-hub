@@ -1,4 +1,4 @@
-# Google Sheets Import Boundary
+# Google Drive Import Boundary
 
 ## Design posture
 
@@ -14,10 +14,11 @@ Because of that, the import boundary must support:
 
 ## Import stages
 
-1. Select the sheet profile and worksheet safely.
-2. Normalize headers through aliases and config.
-3. Qualify or reject each row.
-4. Transform the row into canonical content, planning data, and source metadata.
+1. Select a spreadsheet from the designated Google Drive folder.
+2. Select the worksheet/tab inside that spreadsheet.
+3. Normalize headers through aliases and config.
+4. Qualify or reject each row.
+5. Transform the row into canonical content, planning data, and source metadata.
 
 ## Modes
 
@@ -26,8 +27,8 @@ Because of that, the import boundary must support:
   qualification, title derivation, and normalized payload shape without mutating canonical
   content records.
 - `COMMIT`
-  Persists a commit receipt and then creates or updates the canonical content item linked to
-  the Google Sheets source row.
+Persists a commit receipt and then creates or updates the canonical content item linked to
+the Google Drive spreadsheet row.
 
 ## Title derivation order
 
@@ -37,7 +38,7 @@ Because of that, the import boundary must support:
 
 ## Field ownership
 
-Sheets owns upstream planning input.
+Google Drive spreadsheets own upstream planning input.
 
 The app owns:
 
@@ -57,7 +58,7 @@ The app owns:
 
 ## Reprocessing
 
-Reprocessing uses the stable Google Sheets row identity to find the canonical content item:
+Reprocessing uses the stable spreadsheet row identity to find the canonical content item:
 
 - spreadsheet id
 - worksheet id

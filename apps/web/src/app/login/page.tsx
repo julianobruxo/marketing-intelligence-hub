@@ -50,9 +50,9 @@ export default async function LoginPage({
           Protected internal workflow for Pipeline #1
         </h1>
         <p className="mt-3 text-sm leading-6" style={{ color: "#64748B" }}>
-          This platform is designed for the Zazmic content operations workflow:
-          Google Sheets to the internal platform, Canva, and manual or
-          future API-driven LinkedIn publishing.
+          This platform is designed for the Pipeline #1 content workflow:
+          Google Drive spreadsheet selection, normalized import, and internal
+          approval tracking.
         </p>
 
         {/* Error message */}

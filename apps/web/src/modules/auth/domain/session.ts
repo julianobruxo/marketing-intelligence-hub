@@ -1,4 +1,4 @@
-export type AuthMode = "iap" | "development";
+export type AuthMode = "iap" | "cookie" | "development";
 
 export type UserSession = {
   email: string;

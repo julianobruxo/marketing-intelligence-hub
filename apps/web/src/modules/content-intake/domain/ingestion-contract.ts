@@ -54,7 +54,7 @@ export const contentIngestionPayloadSchema = z.object({
   version: z.literal(2),
   mode: importModeSchema.default("COMMIT"),
   idempotencyKey: z.string().min(8),
-  orchestrator: orchestratorTypeSchema,
+  orchestrator: orchestratorTypeSchema.default("MANUAL"),
   triggeredAt: z.iso.datetime(),
   source: z.object({
     system: z.literal("GOOGLE_SHEETS"),
