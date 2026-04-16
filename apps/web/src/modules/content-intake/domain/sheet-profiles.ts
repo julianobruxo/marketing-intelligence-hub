@@ -12,7 +12,7 @@ export const titleDerivationStrategySchema = z.enum([
   "HEURISTIC_LAST_RESORT",
 ]);
 
-export const contentProfileSchema = z.enum(["YANN", "YURI", "ZAZMIC_JOBS"]);
+export const contentProfileSchema = z.enum(["YANN", "YURI", "SHAWN", "SOPHIAN_YACINE", "ZAZMIC_PAGE"]);
 
 export const rowDispositionSchema = z.enum([
   "QUALIFIED",
@@ -365,4 +365,41 @@ export const zazmicBrazilPlanningProfile = sheetProfileSchema.parse({
     { field: "outreachCopy", headerAliases: ["Li outreach copy"] },
   ],
   pushbackCandidates: ["appItemUrl", "workflowStatus", "designAssetUrl", "publishedAt", "publishedPostUrl"],
+});
+
+export const yannKronbergPlanningProfile = sheetProfileSchema.parse({
+  key: "yann-smm-plan",
+  version: 1,
+  spreadsheetId: "1jjYpO7XxCBY2Jfe7hnqanS2H2EJDbbzs-P_BmkefLM4",
+  spreadsheetName: "SMM Plan | Yann Kronberg",
+  worksheetSelection: {
+    allowedStrategies: ["MONTHLY_TAB_PATTERN", "EXACT_WORKSHEET_NAME"],
+    exactWorksheetNames: [],
+    monthlyWorksheetPattern: "LinkedIn \\+ Substack\\s*\\([a-zA-Z]+\\s*20\\d{2}\\)",
+    monthlyWorksheetExamples: ["LinkedIn + Substack(April 2026)"],
+  },
+  headerDiscovery: {
+    headerRowCandidates: [9, 10],
+    requiredHeaderAliases: ["Date", "Platform", "Title", "LinkedIn Copy"],
+  },
+  dataRowRules: {
+    minimumMappedFields: ["plannedDate", "copyEnglish"],
+    skipRowWhenAnyCellMatches: ["week 1", "week 2", "week 3", "week 4", "week 5"],
+  },
+  titleDerivation: {
+    explicitMappedField: undefined,
+    fallbackField: "copyEnglish",
+    allowHeuristicFallback: true,
+  },
+  fieldMappings: [
+    { field: "plannedDate", headerAliases: ["Date"], required: true },
+    { field: "platformLabel", headerAliases: ["Platform", "Platform label"] },
+    { field: "campaignLabel", headerAliases: ["Title", "Post title"] },
+    { field: "copyEnglish", headerAliases: ["LinkedIn Copy", "LinkedIn - up to 3000 characters"], required: true },
+    { field: "sourceAssetLink", headerAliases: ["Substack", "Link to the doc"] },
+    { field: "publishedFlag", headerAliases: ["Published"] },
+    { field: "contentDeadline", headerAliases: ["Content Deadline"] },
+    { field: "publishedPostUrl", headerAliases: ["Link to the comments"] },
+  ],
+  pushbackCandidates: [],
 });

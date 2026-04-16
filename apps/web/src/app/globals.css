@@ -46,41 +46,51 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* ── Zazmic brand colors ── */
+  --color-zazmic-navy: #0F172A;
+  --color-zazmic-charcoal: #1E293B;
+  --color-zazmic-coral: #E8584A;
+  --color-zazmic-coral-hover: #D14A3D;
+  --color-zazmic-coral-light: #FEF2F1;
+  --color-linkedin-blue: #0A66C2;
+  --color-linkedin-blue-faint: #F0F4F8;
+  --color-linkedin-blue-light: #E8F0FE;
 }
 
 :root {
-  --background: oklch(0.987 0.003 248.9);
-  --foreground: oklch(0.205 0.02 258.2);
-  --card: oklch(0.999 0.001 247.84);
-  --card-foreground: oklch(0.205 0.02 258.2);
-  --popover: oklch(0.999 0.001 247.84);
-  --popover-foreground: oklch(0.205 0.02 258.2);
-  --primary: oklch(0.43 0.06 252.7);
-  --primary-foreground: oklch(0.99 0.002 247.86);
-  --secondary: oklch(0.958 0.008 247.86);
-  --secondary-foreground: oklch(0.235 0.02 260.32);
-  --muted: oklch(0.962 0.006 247.86);
-  --muted-foreground: oklch(0.44 0.02 258.2);
-  --accent: oklch(0.935 0.016 247.9);
-  --accent-foreground: oklch(0.235 0.02 260.32);
+  --background: #F0F4F8;
+  --foreground: #0F172A;
+  --card: #FFFFFF;
+  --card-foreground: #0F172A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0F172A;
+  --primary: #E8584A;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F1F5F9;
+  --secondary-foreground: #0F172A;
+  --muted: #F1F5F9;
+  --muted-foreground: #64748B;
+  --accent: #E8F0FE;
+  --accent-foreground: #0F172A;
   --destructive: oklch(0.58 0.223 27.33);
-  --border: oklch(0.91 0.008 250.2);
-  --input: oklch(0.91 0.008 250.2);
-  --ring: oklch(0.43 0.06 252.7);
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: #0A66C2;
   --chart-1: oklch(0.54 0.08 251.2);
   --chart-2: oklch(0.66 0.05 205.2);
   --chart-3: oklch(0.7 0.05 160.5);
   --chart-4: oklch(0.72 0.06 92.1);
   --chart-5: oklch(0.63 0.07 34.8);
   --radius: 0.625rem;
-  --sidebar: oklch(0.999 0.001 247.84);
-  --sidebar-foreground: oklch(0.205 0.02 258.2);
-  --sidebar-primary: oklch(0.43 0.06 252.7);
-  --sidebar-primary-foreground: oklch(0.99 0.002 247.86);
-  --sidebar-accent: oklch(0.945 0.008 247.86);
-  --sidebar-accent-foreground: oklch(0.235 0.02 260.32);
-  --sidebar-border: oklch(0.91 0.008 250.2);
-  --sidebar-ring: oklch(0.43 0.06 252.7);
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #0F172A;
+  --sidebar-primary: #E8584A;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #E8F0FE;
+  --sidebar-accent-foreground: #0F172A;
+  --sidebar-border: #E2E8F0;
+  --sidebar-ring: #0A66C2;
 }
 
 @layer base {
@@ -88,9 +98,142 @@
     @apply border-border outline-ring/50;
   }
   html {
-    @apply bg-background font-sans text-foreground;
+    @apply h-full antialiased;
+    background-color: #F0F4F8;
+    color: #0F172A;
   }
   body {
-    @apply min-h-screen bg-background text-foreground;
+    @apply min-h-screen;
+    background-color: #F0F4F8;
+    color: #0F172A;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   }
+}
+
+/* ── Keyframe animations ─────────────────────────────────────────────────── */
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeInRow {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes subtleGradientShift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* ── Animation utility classes ───────────────────────────────────────────── */
+
+.animate-fade-in-up {
+  animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.animate-fade-in-row {
+  animation: fadeInRow 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* ── Transition utilities ─────────────────────────────────────────────────── */
+
+.transition-default {
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.transition-expand {
+  transition: all 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Input focus styles ──────────────────────────────────────────────────── */
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: #0A66C2 !important;
+  box-shadow: 0 0 0 3px rgba(10, 102, 194, 0.12);
+  transition: border-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Button active press effect ──────────────────────────────────────────── */
+
+button:active,
+[type="submit"]:active {
+  transform: scale(0.98);
+  transition: transform 100ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Coral button hover (used on login page anchor) ──────────────────────── */
+a[style*="E8584A"]:hover {
+  background-color: #D14A3D !important;
+}
+
+/* ── Queue row hover lift ─────────────────────────────────────────────────── */
+
+.queue-row {
+  transition: background-color 150ms ease-in-out,
+              box-shadow 150ms ease-in-out,
+              transform 150ms ease-in-out;
+  cursor: pointer;
+}
+
+.queue-row:hover {
+  background-color: #F8FAFC;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
+}
+
+/* ── Attention signal animations ─────────────────────────────────────────── */
+
+@keyframes borderPulseCoral {
+  0%, 100% { border-left-color: rgba(232, 88, 74, 1); }
+  50%       { border-left-color: rgba(232, 88, 74, 0.45); }
+}
+
+@keyframes borderPulseRed {
+  0%, 100% { border-left-color: rgba(239, 68, 68, 1); }
+  50%       { border-left-color: rgba(239, 68, 68, 0.45); }
+}
+
+@keyframes dotPulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%       { transform: scale(1.4); opacity: 0.65; }
+}
+
+.queue-row-needs-action {
+  border-left: 3px solid #E8584A;
+  animation: borderPulseCoral 2s ease-in-out infinite;
+}
+
+.queue-row-failed {
+  border-left: 3px solid #EF4444;
+  animation: borderPulseRed 2s ease-in-out infinite;
+}
+
+.queue-row-blocked {
+  border-left: 3px solid #F59E0B;
+}
+
+.queue-row-ready {
+  border-left: 3px solid #22C55E;
+}
+
+.status-dot-urgent {
+  animation: dotPulse 2s ease-in-out infinite;
 }

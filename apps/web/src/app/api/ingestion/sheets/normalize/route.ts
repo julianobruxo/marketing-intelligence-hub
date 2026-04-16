@@ -2,9 +2,15 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { importContentItem } from "@/modules/content-intake/application/import-content-item";
 import { safeNormalizeSheetRow } from "@/modules/content-intake/application/normalize-sheet-row";
+import { getCurrentSession } from "@/modules/auth/application/auth-service";
 import { logEvent } from "@/shared/logging/logger";
 
 export async function POST(request: Request) {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
   try {
     const payload = await request.json();
     const normalization = safeNormalizeSheetRow(payload);

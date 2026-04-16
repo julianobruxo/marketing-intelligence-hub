@@ -3,6 +3,7 @@ import {
   ContentStatus,
   ImportReceiptStatus,
   Prisma,
+  ContentProfile,
   TranslationStatus,
   UpstreamSystem,
 } from "@prisma/client";
@@ -173,7 +174,7 @@ export async function importContentItem(rawPayload: unknown) {
           where: { id: sourceLink.contentItemId },
           data: {
             canonicalKey: payload.content.canonicalKey,
-            profile: payload.content.profile,
+            profile: payload.content.profile as ContentProfile,
             contentType: payload.content.contentType,
             title,
             copy: payload.content.copy,
@@ -207,7 +208,7 @@ export async function importContentItem(rawPayload: unknown) {
       : await tx.contentItem.create({
           data: {
             canonicalKey: payload.content.canonicalKey,
-            profile: payload.content.profile,
+            profile: payload.content.profile as ContentProfile,
             contentType: payload.content.contentType,
             title,
             copy: payload.content.copy,

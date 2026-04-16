@@ -80,13 +80,13 @@ export function normalizeSheetRow(rawRequest: unknown) {
   const rowMap = buildRowMap(request.source.headers, request.source.rowValues);
 
   const planningFields = {
-    plannedDate: mappedFields.plannedDate ? rowMap[mappedFields.plannedDate.header] : undefined,
-    platformLabel: mappedFields.platformLabel ? rowMap[mappedFields.platformLabel.header] : undefined,
-    campaignLabel: mappedFields.campaignLabel ? rowMap[mappedFields.campaignLabel.header] : undefined,
+    plannedDate: mappedFields.plannedDate ? optionalNonEmpty(rowMap[mappedFields.plannedDate.header]) : undefined,
+    platformLabel: mappedFields.platformLabel ? optionalNonEmpty(rowMap[mappedFields.platformLabel.header]) : undefined,
+    campaignLabel: mappedFields.campaignLabel ? optionalNonEmpty(rowMap[mappedFields.campaignLabel.header]) : undefined,
     copyEnglish: mappedFields.copyEnglish ? rowMap[mappedFields.copyEnglish.header] ?? "" : "",
-    copyPortuguese: mappedFields.copyPortuguese ? rowMap[mappedFields.copyPortuguese.header] : undefined,
-    sourceAssetLink: mappedFields.sourceAssetLink ? rowMap[mappedFields.sourceAssetLink.header] : undefined,
-    contentDeadline: mappedFields.contentDeadline ? rowMap[mappedFields.contentDeadline.header] : undefined,
+    copyPortuguese: mappedFields.copyPortuguese ? optionalNonEmpty(rowMap[mappedFields.copyPortuguese.header]) : undefined,
+    sourceAssetLink: mappedFields.sourceAssetLink ? optionalNonEmpty(rowMap[mappedFields.sourceAssetLink.header]) : undefined,
+    contentDeadline: mappedFields.contentDeadline ? optionalNonEmpty(rowMap[mappedFields.contentDeadline.header]) : undefined,
   };
 
   const sourceMetadata = {

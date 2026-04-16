@@ -129,7 +129,6 @@ async function ensureSourceLink({
 }) {
   const existing = await prisma.contentSourceLink.findFirst({
     where: {
-      contentItemId,
       spreadsheetId,
       worksheetId,
       rowId,
@@ -137,7 +136,18 @@ async function ensureSourceLink({
   });
 
   if (existing) {
-    return existing;
+    return prisma.contentSourceLink.update({
+      where: { id: existing.id },
+      data: {
+        contentItemId,
+        worksheetName,
+        rowNumber,
+        rowVersion,
+        lastFingerprint,
+        sheetProfileKey: "zazmic-brazil-monthly-linkedin",
+        sheetProfileVersion: 1,
+      },
+    });
   }
 
   return prisma.contentSourceLink.create({
@@ -387,31 +397,111 @@ async function main() {
     AppRole.TRANSLATION_APPROVER,
   ]);
 
-  await prisma.profileTemplateMapping.createMany({
-    data: [
-      {
-        profile: ContentProfile.YANN,
-        contentType: ContentType.STATIC_POST,
-        locale: "en",
-        designProvider: DesignProvider.CANVA,
-        externalTemplateId: "seed-yann-static-en",
-        displayName: "Yann Static English",
-      },
-      {
-        profile: ContentProfile.YURI,
-        contentType: ContentType.STATIC_POST,
-        locale: "en",
-        designProvider: DesignProvider.CANVA,
-        externalTemplateId: "seed-yuri-static-en",
-        displayName: "Yuri Static English",
-      },
-    ],
-    skipDuplicates: true,
+  await prisma.contentItem.deleteMany({
+    where: {
+      OR: [
+        { canonicalKey: { startsWith: "yann-" } },
+        { canonicalKey: { startsWith: "yuri-" } },
+      ],
+    },
   });
 
-  const yannTemplate = await prisma.profileTemplateMapping.findFirst({
+  await prisma.profileTemplateMapping.deleteMany({
     where: {
+      OR: [
+        { externalTemplateId: { startsWith: "seed-YANN-" } },
+        { externalTemplateId: { startsWith: "seed-YURI-" } },
+        { displayName: { contains: "Yann", mode: "insensitive" } },
+        { displayName: { contains: "Yuri", mode: "insensitive" } },
+      ],
+    },
+  });
+
+  const templateMappings = [
+    {
+      profile: ContentProfile.SHAWN,
+      contentType: ContentType.STATIC_POST,
+      locale: "en",
+      designProvider: DesignProvider.CANVA,
+      externalTemplateId: "seed-SHAWN-static-en",
+      displayName: "Shawn Static English",
+    },
+    {
+      profile: ContentProfile.SOPHIAN_YACINE,
+      contentType: ContentType.STATIC_POST,
+      locale: "en",
+      designProvider: DesignProvider.CANVA,
+      externalTemplateId: "seed-SOPHIAN_YACINE-static-en",
+      displayName: "Sophian Yacine Static English",
+    },
+    {
       profile: ContentProfile.YANN,
+      contentType: ContentType.STATIC_POST,
+      locale: "en",
+      designProvider: DesignProvider.CANVA,
+      externalTemplateId: "seed-YANN-static-en",
+      displayName: "Yann Static English",
+    },
+    {
+      profile: ContentProfile.YURI,
+      contentType: ContentType.STATIC_POST,
+      locale: "en",
+      designProvider: DesignProvider.CANVA,
+      externalTemplateId: "seed-YURI-static-en",
+      displayName: "Yuri Static English",
+    },
+    {
+      profile: ContentProfile.ZAZMIC_PAGE,
+      contentType: ContentType.STATIC_POST,
+      locale: "en",
+      designProvider: DesignProvider.CANVA,
+      externalTemplateId: "seed-ZAZMIC_PAGE-static-en",
+      displayName: "Zazmic Page Static English",
+    },
+  ];
+
+  for (const mapping of templateMappings) {
+    const existingMapping = await prisma.profileTemplateMapping.findFirst({
+      where: {
+        profile: mapping.profile,
+        contentType: mapping.contentType,
+        locale: mapping.locale,
+        designProvider: mapping.designProvider,
+        externalTemplateId: mapping.externalTemplateId,
+      },
+    });
+
+    if (existingMapping) {
+      await prisma.profileTemplateMapping.update({
+        where: { id: existingMapping.id },
+        data: {
+          displayName: mapping.displayName,
+          isActive: true,
+        },
+      });
+    } else {
+      await prisma.profileTemplateMapping.create({
+        data: mapping,
+      });
+    }
+
+    await prisma.profileTemplateMapping.updateMany({
+      where: {
+        profile: mapping.profile,
+        contentType: mapping.contentType,
+        locale: mapping.locale,
+        designProvider: mapping.designProvider,
+      },
+      data: {
+        displayName: mapping.displayName,
+        isActive: true,
+      },
+    });
+  }
+
+  const shawnTemplate = await prisma.profileTemplateMapping.findFirst({
+    where: {
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       locale: "en",
       designProvider: DesignProvider.CANVA,
@@ -419,9 +509,9 @@ async function main() {
     },
   });
 
-  const yuriTemplate = await prisma.profileTemplateMapping.findFirst({
+  const sophianYacineTemplate = await prisma.profileTemplateMapping.findFirst({
     where: {
-      profile: ContentProfile.YURI,
+      profile: ContentProfile.SOPHIAN_YACINE,
       contentType: ContentType.STATIC_POST,
       locale: "en",
       designProvider: DesignProvider.CANVA,
@@ -432,7 +522,7 @@ async function main() {
   const sampleItems = [
     {
       canonicalKey: "zazmic-brazil-2026-04-08-browser-gap",
-      profile: ContentProfile.YANN,
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "PROMO | CHROME ENTERPRISE",
       copy:
@@ -480,8 +570,8 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yann-static-canva-slice-1",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-static-canva-slice-1",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "Browser activity is your biggest hidden security risk",
       copy:
@@ -524,8 +614,8 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yann-design-progress",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-design-progress",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "The browser is now part of your enterprise attack surface",
       copy:
@@ -567,8 +657,8 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yann-design-failed",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-design-failed",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "Why browser risk is operational, not theoretical",
       copy:
@@ -610,10 +700,10 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yuri-revision-blocked",
-      profile: ContentProfile.YURI,
+      canonicalKey: "SOPHIAN_YACINE-revision-blocked",
+      profile: ContentProfile.SOPHIAN_YACINE,
       contentType: ContentType.STATIC_POST,
-      title: "A cleaner message for the first Yuri workflow pass",
+      title: "A cleaner message for the first SOPHIAN_YACINE workflow pass",
       copy:
         "This item is intentionally parked in changes requested so the queue shows a blocked lane for editorial follow-up.",
       currentStatus: ContentStatus.CHANGES_REQUESTED,
@@ -625,7 +715,7 @@ async function main() {
         planning: {
           plannedDate: "2026-04-18",
           platformLabel: "LinkedIn",
-          campaignLabel: "Yuri message test",
+          campaignLabel: "SOPHIAN_YACINE message test",
           copyEnglish:
             "This item is intentionally parked in changes requested so the queue shows a blocked lane for editorial follow-up.",
           contentDeadline: "2026-04-17",
@@ -638,7 +728,7 @@ async function main() {
           titleDerivation: {
             strategy: "EXPLICIT_MAPPED_FIELD",
             sourceField: "campaignLabel",
-            title: "A cleaner message for the first Yuri workflow pass",
+            title: "A cleaner message for the first SOPHIAN_YACINE workflow pass",
           },
         },
       },
@@ -649,12 +739,12 @@ async function main() {
         rowId: "row-62",
         rowNumber: 62,
         rowVersion: "2026-04-12T10:00:00.000Z",
-        lastFingerprint: "seed-yuri-blocked",
+        lastFingerprint: "seed-SOPHIAN_YACINE-blocked",
       },
     },
     {
-      canonicalKey: "yann-design-ready",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-design-ready",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "Generated design ready for human approval",
       copy:
@@ -692,12 +782,12 @@ async function main() {
         rowId: "row-66",
         rowNumber: 66,
         rowVersion: "2026-04-11T09:00:00.000Z",
-        lastFingerprint: "seed-yann-ready",
+        lastFingerprint: "seed-SHAWN-ready",
       },
     },
     {
-      canonicalKey: "yann-imported-intake",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-imported-intake",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "Imported planning row waiting for first review",
       copy:
@@ -740,7 +830,7 @@ async function main() {
     },
     {
       canonicalKey: "zazmic-jobs-route-missing",
-      profile: ContentProfile.ZAZMIC_JOBS,
+      profile: ContentProfile.ZAZMIC_PAGE,
       contentType: ContentType.STATIC_POST,
       title: "Job-post route approved but still missing a mapped template",
       copy:
@@ -782,8 +872,8 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yann-translation-pending",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-translation-pending",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "Localized version is waiting on translation approval",
       copy:
@@ -827,8 +917,8 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yuri-ready-to-publish",
-      profile: ContentProfile.YURI,
+      canonicalKey: "SOPHIAN_YACINE-ready-to-publish",
+      profile: ContentProfile.SOPHIAN_YACINE,
       contentType: ContentType.STATIC_POST,
       title: "Design and approvals are cleared for publishing prep",
       copy:
@@ -870,8 +960,8 @@ async function main() {
       },
     },
     {
-      canonicalKey: "yann-manual-published",
-      profile: ContentProfile.YANN,
+      canonicalKey: "SHAWN-manual-published",
+      profile: ContentProfile.SHAWN,
       contentType: ContentType.STATIC_POST,
       title: "Manual LinkedIn fallback already completed",
       copy:
@@ -911,6 +1001,88 @@ async function main() {
         rowNumber: 89,
         rowVersion: "2026-04-06T15:00:00.000Z",
         lastFingerprint: "seed-manual-published",
+      },
+    },
+    {
+      canonicalKey: "yann-demo-static-post",
+      profile: ContentProfile.YANN,
+      contentType: ContentType.STATIC_POST,
+      title: "Yann's initial demo content item",
+      copy: "Sourced automatically during seed constraints ensuring Yann representation across layout constraints.",
+      currentStatus: ContentStatus.IMPORTED,
+      translationRequired: false,
+      translationStatus: TranslationStatus.NOT_REQUIRED,
+      latestImportAt: new Date("2026-04-10T15:00:00.000Z"),
+      planningSnapshot: {
+        version: 1,
+        planning: {
+          plannedDate: "2026-04-30",
+          platformLabel: "LinkedIn",
+          campaignLabel: "Yann Demo",
+          copyEnglish: "Sourced automatically during seed constraints ensuring Yann representation across layout constraints.",
+          contentDeadline: "2026-04-29",
+        },
+        sourceMetadata: {
+          publishedFlag: "No",
+        },
+        normalization: {
+          sheetProfileKey: "yann-demo-profile",
+          titleDerivation: {
+            strategy: "EXPLICIT_MAPPED_FIELD",
+            sourceField: "campaignLabel",
+            title: "Yann's initial demo content item",
+          },
+        },
+      },
+      sourceLink: {
+        spreadsheetId: "1jjYpO7XxCBY2Jfe7hnqanS2H2EJDbbzs-P_BmkefLM4",
+        worksheetId: "Demo",
+        worksheetName: "Demo Tab",
+        rowId: "row-1",
+        rowNumber: 1,
+        rowVersion: "2026-04-10T15:00:00.000Z",
+        lastFingerprint: "seed-yann-demo",
+      },
+    },
+    {
+      canonicalKey: "yuri-demo-static-post",
+      profile: ContentProfile.YURI,
+      contentType: ContentType.STATIC_POST,
+      title: "Yuri's initial demo content item",
+      copy: "Included via automated DB seeding scripts mimicking base operational boundaries.",
+      currentStatus: ContentStatus.IMPORTED,
+      translationRequired: false,
+      translationStatus: TranslationStatus.NOT_REQUIRED,
+      latestImportAt: new Date("2026-04-11T10:00:00.000Z"),
+      planningSnapshot: {
+        version: 1,
+        planning: {
+          plannedDate: "2026-05-15",
+          platformLabel: "LinkedIn",
+          campaignLabel: "Yuri Demo",
+          copyEnglish: "Included via automated DB seeding scripts mimicking base operational boundaries.",
+          contentDeadline: "2026-05-10",
+        },
+        sourceMetadata: {
+          publishedFlag: "No",
+        },
+        normalization: {
+          sheetProfileKey: "yuri-demo-profile",
+          titleDerivation: {
+            strategy: "EXPLICIT_MAPPED_FIELD",
+            sourceField: "campaignLabel",
+            title: "Yuri's initial demo content item",
+          },
+        },
+      },
+      sourceLink: {
+        spreadsheetId: "demo-yuri-spreadsheet",
+        worksheetId: "Demo",
+        worksheetName: "Demo Tab",
+        rowId: "row-1",
+        rowNumber: 1,
+        rowVersion: "2026-04-11T10:00:00.000Z",
+        lastFingerprint: "seed-yuri-demo",
       },
     },
   ];
@@ -1000,9 +1172,9 @@ async function main() {
     new Date("2026-04-08T15:00:00.000Z"),
   );
 
-  const yannApproved = itemsByKey["yann-static-canva-slice-1"];
+  const ShawnApproved = itemsByKey["SHAWN-static-canva-slice-1"];
   await ensureStatusEvent(
-    yannApproved.id,
+    ShawnApproved.id,
     ContentStatus.IMPORTED,
     "Imported planning row committed into the canonical content item.",
     null,
@@ -1010,7 +1182,7 @@ async function main() {
     new Date("2026-04-15T12:00:00.000Z"),
   );
   await ensureStatusEvent(
-    yannApproved.id,
+    ShawnApproved.id,
     ContentStatus.IN_REVIEW,
     "Editorial review completed without revision requests.",
     ContentStatus.IMPORTED,
@@ -1018,7 +1190,7 @@ async function main() {
     new Date("2026-04-15T12:30:00.000Z"),
   );
   await ensureStatusEvent(
-    yannApproved.id,
+    ShawnApproved.id,
     ContentStatus.CONTENT_APPROVED,
     "Seeded sample item prepared for a first design attempt.",
     ContentStatus.IN_REVIEW,
@@ -1026,17 +1198,17 @@ async function main() {
     new Date("2026-04-15T13:00:00.000Z"),
   );
   await ensureApproval(
-    yannApproved.id,
+    ShawnApproved.id,
     alina.id,
     ApprovalStage.PUBLISH,
     ApprovalDecision.APPROVED,
-    "Approved for the first Yann design handoff.",
+    "Approved for the first SHAWN design handoff.",
     new Date("2026-04-15T13:00:00.000Z"),
   );
 
-  const yannProgress = itemsByKey["yann-design-progress"];
+  const ShawnProgress = itemsByKey["SHAWN-design-progress"];
   await ensureStatusEvent(
-    yannProgress.id,
+    ShawnProgress.id,
     ContentStatus.CONTENT_APPROVED,
     "Content cleared for the first design handoff.",
     ContentStatus.IN_REVIEW,
@@ -1044,15 +1216,15 @@ async function main() {
     new Date("2026-04-14T15:40:00.000Z"),
   );
   await ensureStatusEvent(
-    yannProgress.id,
+    ShawnProgress.id,
     ContentStatus.DESIGN_REQUESTED,
-    "Design attempt 1 created for Yann Static English.",
+    "Design attempt 1 created for SHAWN Static English.",
     ContentStatus.CONTENT_APPROVED,
     alina.email,
     new Date("2026-04-14T15:50:00.000Z"),
   );
   await ensureStatusEvent(
-    yannProgress.id,
+    ShawnProgress.id,
     ContentStatus.DESIGN_IN_PROGRESS,
     "Fake Canva accepted design attempt 1 and is still in progress.",
     ContentStatus.DESIGN_REQUESTED,
@@ -1060,32 +1232,32 @@ async function main() {
     new Date("2026-04-14T15:55:00.000Z"),
   );
   await ensureWorkflowNote(
-    yannProgress.id,
+    ShawnProgress.id,
     juliano.id,
     NoteType.COMMENT,
     "Keep the value point short. We only need one strong browser-risk angle in the first slide.",
     new Date("2026-04-14T16:05:00.000Z"),
   );
   await ensureDesignRequest({
-    contentItemId: yannProgress.id,
-    profileMappingId: yannTemplate?.id ?? null,
+    contentItemId: ShawnProgress.id,
+    profileMappingId: shawnTemplate?.id ?? null,
     attemptNumber: 1,
     status: DesignRequestStatus.IN_PROGRESS,
-    externalRequestId: "fake-canva-yann-progress-1",
-    requestFingerprint: "seed-yann-progress",
+    externalRequestId: "fake-canva-SHAWN-progress-1",
+    requestFingerprint: "seed-SHAWN-progress",
     requestPayload: {
       slice: "canva-v1",
       execution: {
         mode: "FAKE_CANVA",
         simulationScenario: "DELAYED_SUCCESS",
       },
-      templateId: "seed-yann-static-en",
-      contentItemId: yannProgress.id,
+      templateId: "seed-SHAWN-static-en",
+      contentItemId: ShawnProgress.id,
       attemptNumber: 1,
     },
     resultPayload: {
       job: {
-        id: "fake-canva-yann-progress-1",
+        id: "fake-canva-SHAWN-progress-1",
         status: "in_progress",
         progress: 0.58,
       },
@@ -1100,9 +1272,9 @@ async function main() {
     updatedAt: new Date("2026-04-14T16:10:00.000Z"),
   });
 
-  const yannFailed = itemsByKey["yann-design-failed"];
+  const ShawnFailed = itemsByKey["SHAWN-design-failed"];
   await ensureStatusEvent(
-    yannFailed.id,
+    ShawnFailed.id,
     ContentStatus.CONTENT_APPROVED,
     "Content cleared for design before a simulated provider failure.",
     ContentStatus.IN_REVIEW,
@@ -1110,15 +1282,15 @@ async function main() {
     new Date("2026-04-13T11:25:00.000Z"),
   );
   await ensureStatusEvent(
-    yannFailed.id,
+    ShawnFailed.id,
     ContentStatus.DESIGN_REQUESTED,
-    "Design attempt 1 created for Yann Static English.",
+    "Design attempt 1 created for SHAWN Static English.",
     ContentStatus.CONTENT_APPROVED,
     alina.email,
     new Date("2026-04-13T11:40:00.000Z"),
   );
   await ensureStatusEvent(
-    yannFailed.id,
+    ShawnFailed.id,
     ContentStatus.DESIGN_IN_PROGRESS,
     "Fake Canva accepted design attempt 1 before failing on sync.",
     ContentStatus.DESIGN_REQUESTED,
@@ -1126,7 +1298,7 @@ async function main() {
     new Date("2026-04-13T11:42:00.000Z"),
   );
   await ensureStatusEvent(
-    yannFailed.id,
+    ShawnFailed.id,
     ContentStatus.DESIGN_FAILED,
     "Design attempt failed at provider_sync: The simulated Canva adapter failed while rendering the requested template data.",
     ContentStatus.DESIGN_IN_PROGRESS,
@@ -1134,30 +1306,30 @@ async function main() {
     new Date("2026-04-13T11:58:00.000Z"),
   );
   await ensureWorkflowNote(
-    yannFailed.id,
+    ShawnFailed.id,
     juliano.id,
     NoteType.REVISION,
     "Retry after checking whether the body text still fits the seeded template family.",
     new Date("2026-04-13T12:05:00.000Z"),
   );
   await ensureDesignRequest({
-    contentItemId: yannFailed.id,
-    profileMappingId: yannTemplate?.id ?? null,
+    contentItemId: ShawnFailed.id,
+    profileMappingId: shawnTemplate?.id ?? null,
     attemptNumber: 1,
     status: DesignRequestStatus.FAILED,
-    externalRequestId: "fake-canva-yann-failed-1",
+    externalRequestId: "fake-canva-SHAWN-failed-1",
     errorCode: "FAKE_PROVIDER_RENDER_FAILED",
     errorMessage:
       "The simulated Canva adapter failed while rendering the requested template data.",
-    requestFingerprint: "seed-yann-failed",
+    requestFingerprint: "seed-SHAWN-failed",
     requestPayload: {
       slice: "canva-v1",
       execution: {
         mode: "FAKE_CANVA",
         simulationScenario: "FAILURE",
       },
-      templateId: "seed-yann-static-en",
-      contentItemId: yannFailed.id,
+      templateId: "seed-SHAWN-static-en",
+      contentItemId: ShawnFailed.id,
       attemptNumber: 1,
     },
     resultPayload: {
@@ -1168,8 +1340,8 @@ async function main() {
           "The simulated Canva adapter failed while rendering the requested template data.",
       },
       context: {
-        templateId: "seed-yann-static-en",
-        requestFingerprint: "seed-yann-failed",
+        templateId: "seed-SHAWN-static-en",
+        requestFingerprint: "seed-SHAWN-failed",
         attemptNumber: 1,
         simulationScenario: "FAILURE",
       },
@@ -1178,9 +1350,9 @@ async function main() {
     updatedAt: new Date("2026-04-13T11:58:00.000Z"),
   });
 
-  const yuriBlocked = itemsByKey["yuri-revision-blocked"];
+  const sophianYacineBlocked = itemsByKey["SOPHIAN_YACINE-revision-blocked"];
   await ensureStatusEvent(
-    yuriBlocked.id,
+    sophianYacineBlocked.id,
     ContentStatus.CHANGES_REQUESTED,
     "Editorial changes are still required before this item can move forward.",
     ContentStatus.IN_REVIEW,
@@ -1188,7 +1360,7 @@ async function main() {
     new Date("2026-04-12T10:30:00.000Z"),
   );
   await ensureApproval(
-    yuriBlocked.id,
+    sophianYacineBlocked.id,
     alina.id,
     ApprovalStage.PUBLISH,
     ApprovalDecision.CHANGES_REQUESTED,
@@ -1196,16 +1368,16 @@ async function main() {
     new Date("2026-04-12T10:30:00.000Z"),
   );
   await ensureWorkflowNote(
-    yuriBlocked.id,
+    sophianYacineBlocked.id,
     juliano.id,
     NoteType.REVISION,
     "Make the opening claim more credible and remove the extra product framing.",
     new Date("2026-04-12T10:50:00.000Z"),
   );
 
-  const yannReady = itemsByKey["yann-design-ready"];
+  const ShawnReady = itemsByKey["SHAWN-design-ready"];
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.CONTENT_APPROVED,
     "Content cleared for design before the first provider attempt.",
     ContentStatus.IN_REVIEW,
@@ -1213,15 +1385,15 @@ async function main() {
     new Date("2026-04-11T09:15:00.000Z"),
   );
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.DESIGN_REQUESTED,
-    "Design attempt 1 created for Yann Static English.",
+    "Design attempt 1 created for SHAWN Static English.",
     ContentStatus.CONTENT_APPROVED,
     alina.email,
     new Date("2026-04-11T09:20:00.000Z"),
   );
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.DESIGN_IN_PROGRESS,
     "Fake Canva accepted design attempt 1 before returning malformed output.",
     ContentStatus.DESIGN_REQUESTED,
@@ -1229,7 +1401,7 @@ async function main() {
     new Date("2026-04-11T09:22:00.000Z"),
   );
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.DESIGN_FAILED,
     "Attempt 1 failed because the provider returned a malformed design payload during sync.",
     ContentStatus.DESIGN_IN_PROGRESS,
@@ -1237,7 +1409,7 @@ async function main() {
     new Date("2026-04-11T09:35:00.000Z"),
   );
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.DESIGN_REQUESTED,
     "Design attempt 2 created after the malformed response was reviewed.",
     ContentStatus.DESIGN_FAILED,
@@ -1245,7 +1417,7 @@ async function main() {
     new Date("2026-04-11T10:00:00.000Z"),
   );
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.DESIGN_IN_PROGRESS,
     "Fake Canva accepted design attempt 2.",
     ContentStatus.DESIGN_REQUESTED,
@@ -1253,7 +1425,7 @@ async function main() {
     new Date("2026-04-11T10:02:00.000Z"),
   );
   await ensureStatusEvent(
-    yannReady.id,
+    ShawnReady.id,
     ContentStatus.DESIGN_READY,
     "Design attempt 2 resolved successfully and is ready for review.",
     ContentStatus.DESIGN_IN_PROGRESS,
@@ -1261,22 +1433,22 @@ async function main() {
     new Date("2026-04-11T10:18:00.000Z"),
   );
   await ensureDesignRequest({
-    contentItemId: yannReady.id,
-    profileMappingId: yannTemplate?.id ?? null,
+    contentItemId: ShawnReady.id,
+    profileMappingId: shawnTemplate?.id ?? null,
     attemptNumber: 1,
     status: DesignRequestStatus.FAILED,
-    externalRequestId: "fake-canva-yann-ready-1",
+    externalRequestId: "fake-canva-SHAWN-ready-1",
     errorCode: "FAKE_PROVIDER_MALFORMED_RESPONSE",
     errorMessage: "The provider returned an unexpected result shape during sync.",
-    requestFingerprint: "seed-yann-ready-attempt-1",
+    requestFingerprint: "seed-SHAWN-ready-attempt-1",
     requestPayload: {
       slice: "canva-v1",
       execution: {
         mode: "FAKE_CANVA",
         simulationScenario: "MALFORMED_RESPONSE",
       },
-      templateId: "seed-yann-static-en",
-      contentItemId: yannReady.id,
+      templateId: "seed-SHAWN-static-en",
+      contentItemId: ShawnReady.id,
       attemptNumber: 1,
     },
     resultPayload: {
@@ -1286,8 +1458,8 @@ async function main() {
         message: "The provider returned an unexpected result shape during sync.",
       },
       context: {
-        templateId: "seed-yann-static-en",
-        requestFingerprint: "seed-yann-ready-attempt-1",
+        templateId: "seed-SHAWN-static-en",
+        requestFingerprint: "seed-SHAWN-ready-attempt-1",
         attemptNumber: 1,
         simulationScenario: "MALFORMED_RESPONSE",
       },
@@ -1296,31 +1468,31 @@ async function main() {
     updatedAt: new Date("2026-04-11T09:35:00.000Z"),
   });
   const readyRequest = await ensureDesignRequest({
-    contentItemId: yannReady.id,
-    profileMappingId: yannTemplate?.id ?? null,
+    contentItemId: ShawnReady.id,
+    profileMappingId: shawnTemplate?.id ?? null,
     attemptNumber: 2,
     status: DesignRequestStatus.READY,
-    externalRequestId: "fake-canva-yann-ready-2",
-    requestFingerprint: "seed-yann-ready-attempt-2",
+    externalRequestId: "fake-canva-SHAWN-ready-2",
+    requestFingerprint: "seed-SHAWN-ready-attempt-2",
     requestPayload: {
       slice: "canva-v1",
       execution: {
         mode: "FAKE_CANVA",
         simulationScenario: "SUCCESS",
       },
-      templateId: "seed-yann-static-en",
-      contentItemId: yannReady.id,
+      templateId: "seed-SHAWN-static-en",
+      contentItemId: ShawnReady.id,
       attemptNumber: 2,
     },
     resultPayload: {
       job: {
-        id: "fake-canva-yann-ready-2",
+        id: "fake-canva-SHAWN-ready-2",
         status: "success",
         result: {
-          design_id: "fake-canva-yann-ready-2-design",
-          edit_url: "https://fake.canva.local/designs/fake-canva-yann-ready-2/edit",
+          design_id: "fake-canva-SHAWN-ready-2-design",
+          edit_url: "https://fake.canva.local/designs/fake-canva-SHAWN-ready-2/edit",
           thumbnail_url:
-            "https://fake.canva.local/designs/fake-canva-yann-ready-2/thumbnail.png",
+            "https://fake.canva.local/designs/fake-canva-SHAWN-ready-2/thumbnail.png",
         },
       },
       meta: {
@@ -1334,19 +1506,19 @@ async function main() {
   });
   await ensureAsset({
     id: `${readyRequest.id}-static-image`,
-    contentItemId: yannReady.id,
+    contentItemId: ShawnReady.id,
     designRequestId: readyRequest.id,
     assetStatus: AssetStatus.READY,
-    externalUrl: "https://fake.canva.local/designs/fake-canva-yann-ready-2/thumbnail.png",
+    externalUrl: "https://fake.canva.local/designs/fake-canva-SHAWN-ready-2/thumbnail.png",
     metadata: {
       providerMode: "FAKE_CANVA",
-      editUrl: "https://fake.canva.local/designs/fake-canva-yann-ready-2/edit",
+      editUrl: "https://fake.canva.local/designs/fake-canva-SHAWN-ready-2/edit",
     },
     createdAt: new Date("2026-04-11T10:18:00.000Z"),
     updatedAt: new Date("2026-04-11T10:18:00.000Z"),
   });
 
-  const importedIntake = itemsByKey["yann-imported-intake"];
+  const importedIntake = itemsByKey["SHAWN-imported-intake"];
   await ensureStatusEvent(
     importedIntake.id,
     ContentStatus.IMPORTED,
@@ -1389,7 +1561,7 @@ async function main() {
     new Date("2026-04-09T14:30:00.000Z"),
   );
 
-  const translationPending = itemsByKey["yann-translation-pending"];
+  const translationPending = itemsByKey["SHAWN-translation-pending"];
   await ensureStatusEvent(
     translationPending.id,
     ContentStatus.CONTENT_APPROVED,
@@ -1448,7 +1620,7 @@ async function main() {
   );
   const translationPendingRequest = await ensureDesignRequest({
     contentItemId: translationPending.id,
-    profileMappingId: yannTemplate?.id ?? null,
+    profileMappingId: shawnTemplate?.id ?? null,
     attemptNumber: 1,
     status: DesignRequestStatus.APPROVED,
     externalRequestId: "fake-canva-translation-pending-1",
@@ -1459,7 +1631,7 @@ async function main() {
         mode: "FAKE_CANVA",
         simulationScenario: "SUCCESS",
       },
-      templateId: "seed-yann-static-en",
+      templateId: "seed-SHAWN-static-en",
       contentItemId: translationPending.id,
       attemptNumber: 1,
     },
@@ -1490,7 +1662,7 @@ async function main() {
     updatedAt: new Date("2026-04-08T16:50:00.000Z"),
   });
 
-  const readyToPublish = itemsByKey["yuri-ready-to-publish"];
+  const readyToPublish = itemsByKey["SOPHIAN_YACINE-ready-to-publish"];
   await ensureStatusEvent(
     readyToPublish.id,
     ContentStatus.CONTENT_APPROVED,
@@ -1502,7 +1674,7 @@ async function main() {
   await ensureStatusEvent(
     readyToPublish.id,
     ContentStatus.DESIGN_REQUESTED,
-    "Design attempt 1 created for Yuri Static English.",
+    "Design attempt 1 created for SOPHIAN_YACINE Static English.",
     ContentStatus.CONTENT_APPROVED,
     alina.email,
     new Date("2026-04-07T17:15:00.000Z"),
@@ -1549,24 +1721,24 @@ async function main() {
   );
   const readyToPublishRequest = await ensureDesignRequest({
     contentItemId: readyToPublish.id,
-    profileMappingId: yuriTemplate?.id ?? null,
+    profileMappingId: sophianYacineTemplate?.id ?? null,
     attemptNumber: 1,
     status: DesignRequestStatus.APPROVED,
-    externalRequestId: "fake-canva-yuri-ready-1",
-    requestFingerprint: "seed-yuri-ready-1",
+    externalRequestId: "fake-canva-SOPHIAN_YACINE-ready-1",
+    requestFingerprint: "seed-SOPHIAN_YACINE-ready-1",
     requestPayload: {
       slice: "canva-v1",
       execution: {
         mode: "FAKE_CANVA",
         simulationScenario: "SUCCESS",
       },
-      templateId: "seed-yuri-static-en",
+      templateId: "seed-SOPHIAN_YACINE-static-en",
       contentItemId: readyToPublish.id,
       attemptNumber: 1,
     },
     resultPayload: {
       job: {
-        id: "fake-canva-yuri-ready-1",
+        id: "fake-canva-SOPHIAN_YACINE-ready-1",
         status: "approved",
       },
       meta: {
@@ -1582,16 +1754,16 @@ async function main() {
     contentItemId: readyToPublish.id,
     designRequestId: readyToPublishRequest.id,
     assetStatus: AssetStatus.READY,
-    externalUrl: "https://fake.canva.local/designs/fake-canva-yuri-ready-1/thumbnail.png",
+    externalUrl: "https://fake.canva.local/designs/fake-canva-SOPHIAN_YACINE-ready-1/thumbnail.png",
     metadata: {
       providerMode: "FAKE_CANVA",
-      editUrl: "https://fake.canva.local/designs/fake-canva-yuri-ready-1/edit",
+      editUrl: "https://fake.canva.local/designs/fake-canva-SOPHIAN_YACINE-ready-1/edit",
     },
     createdAt: new Date("2026-04-07T17:32:00.000Z"),
     updatedAt: new Date("2026-04-07T17:45:00.000Z"),
   });
 
-  const manualPublished = itemsByKey["yann-manual-published"];
+  const manualPublished = itemsByKey["SHAWN-manual-published"];
   await ensureStatusEvent(
     manualPublished.id,
     ContentStatus.CONTENT_APPROVED,
@@ -1638,7 +1810,7 @@ async function main() {
     designRequestId: null,
     assetType: AssetType.EXPORT_PACKAGE,
     assetStatus: AssetStatus.DELIVERED,
-    externalUrl: "https://fake.canva.local/exports/yann-manual-published.zip",
+    externalUrl: "https://fake.canva.local/exports/SHAWN-manual-published.zip",
     metadata: {
       providerMode: "FAKE_CANVA",
       packageLabel: "Manual fallback package",

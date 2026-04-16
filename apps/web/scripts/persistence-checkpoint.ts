@@ -48,7 +48,7 @@ async function main() {
       ],
     },
     contentHints: {
-      profile: "YANN" as const,
+      profile: "SHAWN" as const,
       contentType: "STATIC_POST" as const,
       locale: "en",
       translationRequired: true,

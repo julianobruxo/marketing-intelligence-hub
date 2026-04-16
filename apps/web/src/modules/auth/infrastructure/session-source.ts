@@ -1,4 +1,5 @@
-import { headers } from "next/headers";
+import { headers, cookies } from "next/headers";
+import { jwtVerify } from "jose";
 import { AUTHORIZED_EMAIL_DOMAIN, env } from "@/shared/config/env";
 import type { UserSession } from "../domain/session";
 
@@ -29,8 +30,28 @@ export async function getRequestIdentity(): Promise<UserSession | null> {
     };
   }
 
+  const cookieStore = await cookies();
+  const mihSession = cookieStore.get("mih_session")?.value;
+
+  if (mihSession) {
+    try {
+      const secretBytes = new TextEncoder().encode(process.env.NEXTAUTH_SECRET ?? "default-local-secret-for-dev");
+      const { payload } = await jwtVerify(mihSession, secretBytes);
+      if (payload.email && isAuthorizedDomain(payload.email as string)) {
+        return {
+          email: payload.email as string,
+          roles: [],
+          mode: "cookie" as any, // extended
+        };
+      }
+    } catch {
+      // Intentionally ignore decryption errors yielding null eventually resolving into 401s naturally
+    }
+  }
+
   if (
     process.env.NODE_ENV !== "production" &&
+    !process.env.GOOGLE_CLIENT_ID &&
     env.DEV_AUTH_EMAIL &&
     isAuthorizedDomain(env.DEV_AUTH_EMAIL)
   ) {

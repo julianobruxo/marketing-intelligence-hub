@@ -1047,6 +1047,40 @@ export function getDesignSummary(item: QueueContentItem) {
   return label;
 }
 
+export function getShortActionPhrase(item: QueueContentItem): string {
+  switch (item.currentStatus) {
+    case ContentStatus.IMPORTED:
+    case ContentStatus.IN_REVIEW:
+      return "Start review";
+    case ContentStatus.CONTENT_APPROVED:
+      if (item.queueMappingAvailability === "MISSING") {
+        return "Resolve template route";
+      }
+      return "Start design";
+    case ContentStatus.DESIGN_REQUESTED:
+    case ContentStatus.DESIGN_IN_PROGRESS:
+      return "Refresh design status";
+    case ContentStatus.DESIGN_READY:
+      return "Approve design";
+    case ContentStatus.DESIGN_FAILED:
+      return "Retry design";
+    case ContentStatus.CHANGES_REQUESTED:
+      return "Revise and resubmit";
+    case ContentStatus.DESIGN_APPROVED:
+      return item.translationRequired ? "Advance translation" : "Prepare publish";
+    case ContentStatus.TRANSLATION_PENDING:
+      return "Resolve translation";
+    case ContentStatus.TRANSLATION_APPROVED:
+      return "Prepare publish";
+    case ContentStatus.READY_TO_PUBLISH:
+      return "Publish handoff";
+    case ContentStatus.PUBLISHED_MANUALLY:
+      return "Complete";
+    default:
+      return "Review state";
+  }
+}
+
 export function getTranslationCheckpoint(item: QueueContentItem) {
   if (!item.translationRequired) {
     return "Translation not required";

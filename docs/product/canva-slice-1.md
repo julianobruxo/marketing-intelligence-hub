@@ -2,15 +2,15 @@
 
 ## Exact scope
 
-- Profile: `YANN`
+- Profile: `SHAWN`
 - Content type: `STATIC_POST`
 - Locale: `en`
-- Template family: `Yann Static English`
+- Template family: `SHAWN Static English`
 - Dynamic fields only: `TITLE`, `BODY`
 
 ## Minimum successful flow
 
-1. User opens an approved `YANN` static post in the content detail view.
+1. User opens an approved `SHAWN` static post in the content detail view.
 2. The app creates a `DesignRequest` and moves the content item to `DESIGN_REQUESTED`.
 3. The app validates the active Canva template mapping and the template dataset.
 4. The app starts an Autofill job in Canva and moves the content item to `DESIGN_IN_PROGRESS`.

@@ -39,7 +39,9 @@ enum ImportReceiptStatus {
 enum ContentProfile {
   YANN
   YURI
-  ZAZMIC_JOBS
+  SHAWN
+  SOPHIAN_YACINE
+  ZAZMIC_PAGE
 }
 
 enum ContentType {

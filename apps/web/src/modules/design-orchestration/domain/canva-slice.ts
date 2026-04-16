@@ -1,10 +1,10 @@
 import { ContentProfile, ContentType } from "@prisma/client";
 
 export const CANVA_SLICE_V1 = {
-  profile: ContentProfile.YANN,
+  profile: ContentProfile.SHAWN,
   contentType: ContentType.STATIC_POST,
   locale: "en",
-  templateFamily: "Yann Static English",
+  templateFamily: "Shawn Static English",
   datasetFields: {
     title: "TITLE",
     body: "BODY",
@@ -17,7 +17,6 @@ export function isSliceOneCanvaEligible(input: {
   sourceLocale: string;
 }) {
   return (
-    input.profile === CANVA_SLICE_V1.profile &&
     input.contentType === CANVA_SLICE_V1.contentType &&
     input.sourceLocale === CANVA_SLICE_V1.locale
   );

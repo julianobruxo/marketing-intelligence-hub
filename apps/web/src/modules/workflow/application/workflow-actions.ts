@@ -42,11 +42,19 @@ export async function addWorkflowNoteAction(formData: FormData) {
 }
 
 export async function recordApprovalAction(formData: FormData) {
+  return recordApprovalActionWithDecision(null, formData);
+}
+
+export async function recordApprovalActionWithDecision(
+  decisionOverride: ApprovalDecision | null,
+  formData: FormData,
+) {
   const session = await requireSession();
   const prisma = getPrisma();
   const contentItemId = String(formData.get("contentItemId") ?? "");
   const stage = String(formData.get("stage") ?? "PUBLISH") as ApprovalStage;
-  const decision = String(formData.get("decision") ?? "APPROVED") as ApprovalDecision;
+  const decision = (decisionOverride ??
+    (String(formData.get("decision") ?? "APPROVED") as ApprovalDecision)) as ApprovalDecision;
   const note = String(formData.get("note") ?? "").trim();
 
   if (!contentItemId) {

@@ -84,13 +84,9 @@ export function canRecordApprovalAction(input: {
     return (
       input.currentStatus === ContentStatus.IMPORTED ||
       input.currentStatus === ContentStatus.IN_REVIEW ||
-      input.currentStatus === ContentStatus.CHANGES_REQUESTED ||
-      input.currentStatus === ContentStatus.TRANSLATION_APPROVED
+      input.currentStatus === ContentStatus.CHANGES_REQUESTED
     );
   }
 
-  return (
-    input.currentStatus === ContentStatus.CONTENT_APPROVED ||
-    input.currentStatus === ContentStatus.TRANSLATION_PENDING
-  );
+  return input.currentStatus === ContentStatus.TRANSLATION_PENDING;
 }

@@ -43,7 +43,7 @@ const sampleRequest = {
     ],
   },
   contentHints: {
-    profile: "YANN",
+    profile: "SHAWN",
     contentType: "STATIC_POST",
     locale: "en",
     translationRequired: true,
