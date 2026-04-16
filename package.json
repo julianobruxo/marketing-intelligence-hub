@@ -1,0 +1,15 @@
+{
+  "name": "marketing-intelligence-hub",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace web",
+    "build": "npm run build --workspace web",
+    "lint": "npm run lint --workspace web",
+    "db:generate": "npm run db:generate --workspace web",
+    "db:migrate": "npm run db:migrate --workspace web",
+    "db:seed": "npm run db:seed --workspace web"
+  }
+}

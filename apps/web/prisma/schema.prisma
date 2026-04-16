@@ -1,0 +1,306 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AppRole {
+  ADMIN
+  EDITOR
+  APPROVER
+  TRANSLATION_APPROVER
+}
+
+enum UpstreamSystem {
+  GOOGLE_SHEETS
+}
+
+enum OrchestratorType {
+  ZAPIER
+  N8N
+  MANUAL
+}
+
+enum ImportMode {
+  PREVIEW
+  COMMIT
+}
+
+enum ImportReceiptStatus {
+  RECEIVED
+  PROCESSED
+  DUPLICATE
+  REJECTED
+  FAILED
+}
+
+enum ContentProfile {
+  YANN
+  YURI
+  ZAZMIC_JOBS
+}
+
+enum ContentType {
+  STATIC_POST
+  CAROUSEL
+}
+
+enum ContentStatus {
+  IMPORTED
+  IN_REVIEW
+  CHANGES_REQUESTED
+  CONTENT_APPROVED
+  DESIGN_REQUESTED
+  DESIGN_IN_PROGRESS
+  DESIGN_FAILED
+  DESIGN_READY
+  DESIGN_APPROVED
+  TRANSLATION_PENDING
+  TRANSLATION_APPROVED
+  READY_TO_PUBLISH
+  PUBLISHED_MANUALLY
+}
+
+enum NoteType {
+  COMMENT
+  REVISION
+}
+
+enum ApprovalStage {
+  PUBLISH
+  TRANSLATION
+}
+
+enum ApprovalDecision {
+  APPROVED
+  CHANGES_REQUESTED
+}
+
+enum DesignProvider {
+  CANVA
+  AI_VISUAL
+  MANUAL
+}
+
+enum DesignRequestStatus {
+  REQUESTED
+  IN_PROGRESS
+  READY
+  APPROVED
+  COMPLETED
+  FAILED
+}
+
+enum AssetType {
+  STATIC_IMAGE
+  CAROUSEL_SLIDE
+  EXPORT_PACKAGE
+}
+
+enum AssetStatus {
+  DRAFT
+  READY
+  DELIVERED
+}
+
+enum TranslationStatus {
+  NOT_REQUIRED
+  REQUESTED
+  READY_FOR_APPROVAL
+  APPROVED
+}
+
+enum WorksheetSelectionStrategy {
+  EXPLICIT_WORKSHEET_ID
+  EXACT_WORKSHEET_NAME
+  MONTHLY_TAB_PATTERN
+}
+
+enum TitleDerivationStrategy {
+  EXPLICIT_MAPPED_FIELD
+  PROFILE_FALLBACK_FIELD
+  HEURISTIC_LAST_RESORT
+}
+
+model User {
+  id        String          @id @default(cuid())
+  email     String          @unique
+  name      String?
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  roles     UserRole[]
+  notes     WorkflowNote[]
+  approvals ApprovalRecord[]
+  imports   ImportReceipt[] @relation("ImportedByUser")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  role      AppRole
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+}
+
+model ContentItem {
+  id                  String            @id @default(cuid())
+  canonicalKey        String            @unique
+  profile             ContentProfile
+  contentType         ContentType
+  title               String
+  copy                String            @db.Text
+  sourceLocale        String            @default("en")
+  translationStatus   TranslationStatus @default(NOT_REQUIRED)
+  translationRequired Boolean           @default(false)
+  currentStatus       ContentStatus     @default(IMPORTED)
+  planningSnapshot    Json
+  latestImportAt      DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  sourceLinks         ContentSourceLink[]
+  importReceipts      ImportReceipt[]
+  notes               WorkflowNote[]
+  approvals           ApprovalRecord[]
+  statusEvents        StatusEvent[]
+  designRequests      DesignRequest[]
+  assets              ContentAsset[]
+}
+
+model ContentSourceLink {
+  id              String         @id @default(cuid())
+  contentItemId   String
+  upstreamSystem  UpstreamSystem
+  sheetProfileKey String?
+  sheetProfileVersion Int?
+  spreadsheetId   String
+  worksheetId     String
+  worksheetName   String
+  rowId           String
+  rowNumber       Int?
+  rowVersion      String?
+  lastFingerprint String?
+  pushbackEnabled Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  contentItem     ContentItem    @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+
+  @@unique([upstreamSystem, spreadsheetId, worksheetId, rowId])
+}
+
+model ImportReceipt {
+  id             String              @id @default(cuid())
+  idempotencyKey String
+  mode           ImportMode          @default(COMMIT)
+  orchestrator   OrchestratorType
+  upstreamSystem UpstreamSystem
+  sheetProfileKey String?
+  sheetProfileVersion Int?
+  status         ImportReceiptStatus @default(RECEIVED)
+  payloadVersion Int
+  fingerprint    String
+  payload        Json
+  contentItemId  String?
+  importedById   String?
+  errorCode      String?
+  errorMessage   String?
+  receivedAt     DateTime            @default(now())
+  processedAt    DateTime?
+  contentItem    ContentItem?        @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+  importedBy     User?               @relation("ImportedByUser", fields: [importedById], references: [id], onDelete: SetNull)
+
+  @@unique([idempotencyKey, mode])
+}
+
+model WorkflowNote {
+  id            String      @id @default(cuid())
+  contentItemId String
+  authorId      String
+  type          NoteType
+  body          String      @db.Text
+  createdAt     DateTime    @default(now())
+  contentItem   ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  author        User        @relation(fields: [authorId], references: [id], onDelete: Restrict)
+}
+
+model ApprovalRecord {
+  id            String           @id @default(cuid())
+  contentItemId String
+  actorId       String
+  stage         ApprovalStage
+  decision      ApprovalDecision
+  note          String?          @db.Text
+  createdAt     DateTime         @default(now())
+  contentItem   ContentItem      @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  actor         User             @relation(fields: [actorId], references: [id], onDelete: Restrict)
+}
+
+model StatusEvent {
+  id            String        @id @default(cuid())
+  contentItemId String
+  fromStatus    ContentStatus?
+  toStatus      ContentStatus
+  actorEmail    String?
+  note          String?       @db.Text
+  createdAt     DateTime      @default(now())
+  contentItem   ContentItem   @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+}
+
+model ProfileTemplateMapping {
+  id                 String         @id @default(cuid())
+  profile            ContentProfile
+  contentType        ContentType
+  locale             String         @default("en")
+  designProvider     DesignProvider @default(CANVA)
+  externalTemplateId String
+  displayName        String
+  isActive           Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  designRequests     DesignRequest[]
+
+  @@unique([profile, contentType, locale, designProvider, externalTemplateId])
+}
+
+model DesignRequest {
+  id                String                 @id @default(cuid())
+  contentItemId     String
+  profileMappingId  String?
+  designProvider    DesignProvider
+  requestFingerprint String
+  attemptNumber     Int                    @default(1)
+  status            DesignRequestStatus   @default(REQUESTED)
+  externalRequestId String?
+  errorCode         String?
+  errorMessage      String?
+  requestPayload    Json?
+  resultPayload     Json?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  contentItem       ContentItem            @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  profileMapping    ProfileTemplateMapping? @relation(fields: [profileMappingId], references: [id], onDelete: SetNull)
+  assets            ContentAsset[]
+
+  @@unique([contentItemId, requestFingerprint, attemptNumber])
+}
+
+model ContentAsset {
+  id              String         @id @default(cuid())
+  contentItemId   String
+  designRequestId String?
+  assetType       AssetType
+  assetStatus     AssetStatus    @default(DRAFT)
+  locale          String         @default("en")
+  slideIndex      Int?
+  externalUrl     String?
+  storagePath     String?
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  contentItem     ContentItem    @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  designRequest   DesignRequest? @relation(fields: [designRequestId], references: [id], onDelete: SetNull)
+}
