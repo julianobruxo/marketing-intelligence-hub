@@ -40,6 +40,22 @@ export const normalizeSheetRowRequestSchema = z.object({
     translationRequired: z.boolean().default(false),
     canonicalKey: z.string().min(1).optional(),
   }),
+  workflow: z.object({
+    translationRequired: z.boolean().default(false),
+    autoPostEnabled: z.boolean().default(false),
+    preferredDesignProvider: z.enum(["CANVA", "AI_VISUAL", "MANUAL"]).default("CANVA"),
+    reimportStrategy: z.enum(["UPDATE", "REPLACE", "KEEP_AS_IS"]).default("UPDATE"),
+    equivalenceTargetContentItemId: z.string().min(1).optional(),
+    conflictConfidence: z.enum(["HIGH_CONFIDENCE_DUPLICATE", "POSSIBLE_DUPLICATE", "NO_MEANINGFUL_MATCH"]).default(
+      "NO_MEANINGFUL_MATCH",
+    ),
+  }).default({
+    translationRequired: false,
+    autoPostEnabled: false,
+    preferredDesignProvider: "CANVA",
+    reimportStrategy: "UPDATE",
+    conflictConfidence: "NO_MEANINGFUL_MATCH",
+  }),
 });
 
 export type NormalizeSheetRowRequest = z.infer<typeof normalizeSheetRowRequestSchema>;

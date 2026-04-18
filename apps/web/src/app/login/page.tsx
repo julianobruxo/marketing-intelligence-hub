@@ -1,5 +1,22 @@
-import Link from "next/link";
 import { AlertTriangle, Globe } from "lucide-react";
+
+function getLoginErrorMessage(error?: string) {
+  if (!error) {
+    return null;
+  }
+
+  const normalized = error.replace(/\+/g, " ").trim();
+
+  if (normalized === "Access restricted to Zazmic organization") {
+    return "Google sign-in succeeded, but this app only allows @zazmic.com accounts. Please sign in with your Zazmic Google account.";
+  }
+
+  if (normalized === "Your account is not provisioned in the system. Contact an administrator.") {
+    return "Google sign-in succeeded, but your account is not provisioned for Pipeline #1. Please contact an administrator.";
+  }
+
+  return normalized;
+}
 
 export default async function LoginPage({
   searchParams,
@@ -7,6 +24,7 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const { error } = await searchParams;
+  const loginError = getLoginErrorMessage(error);
 
   return (
     <main
@@ -15,7 +33,6 @@ export default async function LoginPage({
         background: "linear-gradient(160deg, #0F172A 0%, #1E293B 100%)",
       }}
     >
-      {/* Subtle radial glow behind the card */}
       <div
         className="pointer-events-none absolute inset-0 flex items-center justify-center"
         aria-hidden="true"
@@ -30,12 +47,10 @@ export default async function LoginPage({
         />
       </div>
 
-      {/* Login card */}
       <div
         className="relative w-full max-w-md animate-fade-in-up rounded-xl bg-white px-8 py-10 shadow-2xl"
         style={{ boxShadow: "0 24px 60px rgba(0,0,0,0.35)" }}
       >
-        {/* App badge */}
         <div className="mb-6">
           <span
             className="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold"
@@ -45,7 +60,6 @@ export default async function LoginPage({
           </span>
         </div>
 
-        {/* Heading */}
         <h1 className="text-2xl font-semibold tracking-tight leading-snug" style={{ color: "#0F172A" }}>
           Protected internal workflow for Pipeline #1
         </h1>
@@ -55,8 +69,7 @@ export default async function LoginPage({
           approval tracking.
         </p>
 
-        {/* Error message */}
-        {error && (
+        {loginError && (
           <div
             className="mt-5 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm"
             style={{
@@ -66,14 +79,12 @@ export default async function LoginPage({
             }}
           >
             <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-rose-500" />
-            <p className="font-medium">{error.replace(/\+/g, " ")}</p>
+            <p className="font-medium">{loginError}</p>
           </div>
         )}
 
-        {/* Divider */}
         <div className="mt-7 border-t border-slate-100" />
 
-        {/* Sign in with Google */}
         <div className="mt-6 space-y-3">
           <p className="text-xs font-medium uppercase tracking-wider" style={{ color: "#94A3B8" }}>
             Production access
@@ -91,24 +102,6 @@ export default async function LoginPage({
           <p className="text-center text-[11px]" style={{ color: "#94A3B8" }}>
             Restricted to <span className="font-medium">@zazmic.com</span> identities
           </p>
-        </div>
-
-        {/* Dev bypass */}
-        <div className="mt-6 border-t border-slate-100 pt-5">
-          <p className="text-xs font-medium uppercase tracking-wider" style={{ color: "#94A3B8" }}>
-            Local development
-          </p>
-          <p className="mt-2 text-xs leading-5" style={{ color: "#94A3B8" }}>
-            Set <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px]">DEV_AUTH_EMAIL</code> in{" "}
-            <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px]">.env</code> to bypass Google OAuth locally.
-          </p>
-          <Link
-            href="/queue"
-            className="mt-3 inline-block text-sm font-medium underline underline-offset-4 transition-default"
-            style={{ color: "#0A66C2" }}
-          >
-            Access local queue →
-          </Link>
         </div>
       </div>
     </main>

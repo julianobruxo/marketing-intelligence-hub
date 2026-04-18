@@ -9,6 +9,7 @@ import {
   NoteType,
 } from "@prisma/client";
 import { CANVA_SLICE_V1, isSliceOneCanvaEligible } from "@/modules/design-orchestration/domain/canva-slice";
+import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-intake/domain/infer-content-status";
 import type { ActiveTemplateMapping, ContentItemDetail, QueueContentItem } from "./content-queries";
 
 export type QueueLane = "NEEDS_ACTION" | "IN_PROGRESS" | "FAILED" | "BLOCKED" | "READY";
@@ -139,6 +140,53 @@ function getScenarioLabel(request: ContentItemDetail["designRequests"][number]) 
     : "default";
 }
 
+function getOperationalStatus(item: Pick<ContentItemDetail, "planningSnapshot">) {
+  return readOperationalStatusFromPlanningSnapshot(item.planningSnapshot);
+}
+
+function buildOperationalLaneDetail(operationalStatus: ReturnType<typeof getOperationalStatus>) {
+  switch (operationalStatus) {
+    case "WAITING_FOR_COPY":
+      return {
+        lane: "BLOCKED" as const,
+        nextActionLabel: "Collect the missing copy",
+        waitingOn: "Copywriter",
+        blocker: "The row is real, but the LinkedIn copy is not present yet.",
+        reason: "The spreadsheet row is a valid operational item, but it still needs copy before design can start.",
+        tone: "amber" as const,
+      };
+    case "LATE":
+      return {
+        lane: "FAILED" as const,
+        nextActionLabel: "Continue process",
+        waitingOn: "Internal operator",
+        blocker: null,
+        reason: "The row is still operationally valid, but the deadline has passed and it should be handled urgently.",
+        tone: "rose" as const,
+      };
+    case "READY_FOR_DESIGN":
+      return {
+        lane: "NEEDS_ACTION" as const,
+        nextActionLabel: "Send this item to design",
+        waitingOn: "Internal operator",
+        blocker: null,
+        reason: "The row has the required planning signals and is ready for the design handoff.",
+        tone: "sky" as const,
+      };
+    case "PUBLISHED":
+      return {
+        lane: "READY" as const,
+        nextActionLabel: "No further action needed",
+        waitingOn: "No further action",
+        blocker: null,
+        reason: "The source sheet already marks this row as published, so the item is treated as concluded.",
+        tone: "emerald" as const,
+      };
+    default:
+      return null;
+  }
+}
+
 function buildApprovalCheckpoint(
   item: Pick<ContentItemDetail, "translationRequired" | "approvals">,
   stage: ApprovalStage,
@@ -211,6 +259,18 @@ function buildQueueLaneDetails(item: QueueContentItem) {
     latestDesignRequest?.status === DesignRequestStatus.FAILED
       ? latestDesignRequest.errorMessage ?? latestDesignRequest.errorCode ?? "Design provider failure."
       : null;
+  const operationalStatus = getOperationalStatus(item);
+
+  if (
+    item.currentStatus === ContentStatus.IMPORTED ||
+    item.currentStatus === ContentStatus.IN_REVIEW ||
+    item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
+  ) {
+    const operationalLane = buildOperationalLaneDetail(operationalStatus);
+    if (operationalLane) {
+      return operationalLane;
+    }
+  }
 
   switch (item.currentStatus) {
     case ContentStatus.IMPORTED:
@@ -524,10 +584,10 @@ export function buildQueueSections(items: QueueContentItem[]): QueueLaneSection[
     },
     FAILED: {
       lane: "FAILED",
-      label: "Failed",
-      description: "Items that stopped on a provider or workflow error and need inspection.",
-      emptyTitle: "No failed items need recovery",
-      emptyDescription: "There are no stored provider or workflow failures needing intervention right now.",
+      label: "Attention",
+      description: "Items that need urgent operator attention because they are overdue or hit a workflow failure.",
+      emptyTitle: "Nothing urgent needs attention",
+      emptyDescription: "There are no overdue items or workflow failures needing intervention right now.",
     },
     BLOCKED: {
       lane: "BLOCKED",
@@ -601,6 +661,56 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
   const [publishCheckpoint, translationCheckpoint] = buildApprovalCheckpoints(item);
   const latestDesignRequest = item.designRequests[0];
   const latestAsset = item.assets[item.assets.length - 1];
+  const operationalStatus = getOperationalStatus(item);
+
+  if (
+    item.currentStatus === ContentStatus.IMPORTED ||
+    item.currentStatus === ContentStatus.IN_REVIEW ||
+    item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
+  ) {
+    switch (operationalStatus) {
+      case "WAITING_FOR_COPY":
+        return {
+          headline: "The row is valid, but copy is still missing",
+          nextStep: "Wait for the spreadsheet copy to be completed before sending this item to design.",
+          afterThisStep: "Once copy exists, the item can move into the design handoff.",
+          waitingOn: "Copywriter",
+          blocker: "The spreadsheet row is operationally valid, but it is waiting on copy.",
+          readinessSignal: "The item is still actionable, but not yet ready for design.",
+          tone: "amber",
+        };
+      case "LATE":
+        return {
+          headline: "The item is overdue",
+          nextStep: "Continue the current process and decide the fastest way to move the item forward.",
+          afterThisStep: "Once the next step is resumed, the item can keep moving through the normal workflow.",
+          waitingOn: "Internal operator",
+          blocker: null,
+          readinessSignal: "This row needs urgent attention, but it is not blocked by the missed deadline alone.",
+          tone: "rose",
+        };
+      case "READY_FOR_DESIGN":
+        return {
+          headline: "The row is ready for design",
+          nextStep: "Send the item to design once the copy owner confirms it is ready.",
+          afterThisStep: "The item can move into the regular design and approval path.",
+          waitingOn: "Internal operator",
+          blocker: null,
+          readinessSignal: "The row has enough planning signal to begin the design stage.",
+          tone: "emerald",
+        };
+      case "PUBLISHED":
+        return {
+          headline: "The source sheet already marks this row as published",
+          nextStep: "Keep it read-only and use it as a completed operational reference.",
+          afterThisStep: "No further phase-one action is required for this row.",
+          waitingOn: "No further action",
+          blocker: null,
+          readinessSignal: "The row is already concluded in the source sheet.",
+          tone: "emerald",
+        };
+    }
+  }
 
   if (item.currentStatus === ContentStatus.CONTENT_APPROVED && item.activeTemplateMappings.length === 0) {
     return {
@@ -750,27 +860,114 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
     };
   }
 
-  if (item.currentStatus === ContentStatus.READY_TO_PUBLISH) {
+  if (item.currentStatus === ContentStatus.WAITING_FOR_COPY) {
     return {
-      headline: "The item is ready for the publishing handoff",
-      nextStep: "Prepare the final package and move the item toward LinkedIn posting or manual fallback.",
-      afterThisStep: "The next phase of the workflow is packaging and publishing readiness.",
+      headline: "Waiting for copy",
+      nextStep: "The item cannot advance until copy is added to the spreadsheet.",
+      afterThisStep: "Once copy exists, the item moves directly into design.",
+      waitingOn: "Copywriter",
+      blocker: "No copy found in the source spreadsheet row.",
+      readinessSignal: "The item is valid but blocked until copy arrives.",
+      tone: "amber",
+    };
+  }
+
+  if (item.currentStatus === ContentStatus.READY_FOR_DESIGN) {
+    return {
+      headline: "Ready for design",
+      nextStep: "Start the design handoff for this content item.",
+      afterThisStep: "The item enters the active design production cycle.",
       waitingOn: "Internal operator",
       blocker: null,
-      readinessSignal: "Design approval is already in place.",
+      readinessSignal: "Copy is present and the item can begin the design stage.",
       tone: "emerald",
     };
   }
 
-  if (item.currentStatus === ContentStatus.PUBLISHED_MANUALLY) {
+  if (item.currentStatus === ContentStatus.IN_DESIGN) {
     return {
-      headline: "Manual publishing fallback is complete",
-      nextStep: "Record any final links or handoff notes that still need to be retained.",
-      afterThisStep: "This content item is complete for the current phase-1 publishing path.",
+      headline: "Design is in production",
+      nextStep: "Sync the design status until it resolves to ready or failed.",
+      afterThisStep: "Once the design resolves, it can be reviewed and approved here.",
+      waitingOn: "Design provider",
+      blocker: null,
+      readinessSignal: "The design handoff is active.",
+      tone: "amber",
+    };
+  }
+
+  if (item.currentStatus === ContentStatus.TRANSLATION_REQUESTED) {
+    return {
+      headline: "Translation has been requested",
+      nextStep: "Wait for the AI translation to be generated.",
+      afterThisStep: "Once generated, the translation will appear here for human review.",
+      waitingOn: "Translation AI",
+      blocker: null,
+      readinessSignal: "Translation is queued and will be ready soon.",
+      tone: "amber",
+    };
+  }
+
+  if (item.currentStatus === ContentStatus.TRANSLATION_READY) {
+    return {
+      headline: "AI translation is ready for review",
+      nextStep: "Review and edit the generated translation, then approve it.",
+      afterThisStep: "Once approved, the item advances to final review.",
+      waitingOn: "Translation reviewer",
+      blocker: null,
+      readinessSignal: "The AI-generated translation is available below.",
+      tone: "sky",
+    };
+  }
+
+  if (item.currentStatus === ContentStatus.READY_FOR_FINAL_REVIEW) {
+    return {
+      headline: "Ready for final review",
+      nextStep: "Review the complete package — copy, design, and translation — then approve for posting.",
+      afterThisStep: "Once approved, the item is ready to POST on LinkedIn.",
+      waitingOn: "Internal approver",
+      blocker: null,
+      readinessSignal: "All upstream steps are complete. Final review is the last gate.",
+      tone: "emerald",
+    };
+  }
+
+  if (item.currentStatus === ContentStatus.READY_TO_POST) {
+    return {
+      headline: "Ready to POST on LinkedIn",
+      nextStep: "Execute the final post on LinkedIn.",
+      afterThisStep: "After posting, this item will be marked as POSTED and the workflow is complete.",
+      waitingOn: "Internal operator",
+      blocker: null,
+      readinessSignal: "All approvals are in place. Ready to post.",
+      tone: "sky",
+    };
+  }
+
+  if (
+    item.currentStatus === ContentStatus.POSTED ||
+    item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
+  ) {
+    return {
+      headline: "Posted on LinkedIn",
+      nextStep: "No further action required.",
+      afterThisStep: "This item is complete.",
       waitingOn: "No further action",
       blocker: null,
-      readinessSignal: "The current phase-1 publishing path is complete.",
+      readinessSignal: "The item has been posted and the workflow is complete.",
       tone: "emerald",
+    };
+  }
+
+  if (item.currentStatus === ContentStatus.READY_TO_PUBLISH) {
+    return {
+      headline: "Ready to POST on LinkedIn",
+      nextStep: "Execute the final post on LinkedIn.",
+      afterThisStep: "After posting, this item will be marked as complete.",
+      waitingOn: "Internal operator",
+      blocker: null,
+      readinessSignal: "All approvals are in place.",
+      tone: "sky",
     };
   }
 
@@ -827,7 +1024,7 @@ export function buildTemplateRoutingSummary(item: ContentItemDetail): TemplateRo
       headline: "A template mapping exists, but this item is outside the current slice path",
       status: "OUT_OF_SCOPE",
       summary:
-        "Mappings are present for this profile route, but the current narrow Canva slice does not actively use this combination yet.",
+        "Mappings are present for this route, but this item is not using an active template path yet.",
       tone: "amber",
       activeRouteLabel,
       mappings: activeMappings,
@@ -955,24 +1152,24 @@ export function buildIntegrationReadinessEntries(item: ContentItemDetail): Integ
     },
     {
       id: "orchestration",
-      label: "Zapier or n8n handoff contract",
+      label: "Import trace",
       status: hasImportTrace ? "READY" : "PENDING",
       summary: hasImportTrace
-        ? "The ingestion contract is represented through persisted import receipts."
-        : "No orchestration receipt is attached to this item yet.",
-      detail: "This remains contract-ready without requiring a live automation tool configuration.",
+        ? "The item has a persisted import receipt for traceability."
+        : "No import receipt is attached to this item yet.",
+      detail: "This keeps the spreadsheet-to-app handoff visible without exposing technical orchestration details.",
       tone: hasImportTrace ? "sky" : "amber",
     },
     {
       id: "design",
-      label: "Design provider adapter",
+      label: "Visual route",
       status: routing.status === "MISSING" ? "PENDING" : "READY",
       summary:
         latestDesignRequest?.requestPayload &&
         typeof latestDesignRequest.requestPayload === "object" &&
         "execution" in (latestDesignRequest.requestPayload as Record<string, unknown>)
-          ? "The provider boundary is active in fake mode for architectural testing."
-          : "The design boundary is represented and ready to stay fake until credentials are introduced.",
+          ? "A visual request is already recorded for this item."
+          : "The visual route is ready when this item reaches the design step.",
       detail:
         routing.status === "MISSING"
           ? "A template route still needs to be defined for this item before a design handoff can be used."
@@ -1048,36 +1245,73 @@ export function getDesignSummary(item: QueueContentItem) {
 }
 
 export function getShortActionPhrase(item: QueueContentItem): string {
+  const operationalStatus = getOperationalStatus(item);
+
+  if (
+    item.currentStatus === ContentStatus.IMPORTED ||
+    item.currentStatus === ContentStatus.IN_REVIEW ||
+    item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
+  ) {
+    switch (operationalStatus) {
+      case "WAITING_FOR_COPY":
+        return "Awaiting Copy";
+      case "LATE":
+        return "Continue";
+      case "READY_FOR_DESIGN":
+        return "Send to Design";
+      case "PUBLISHED":
+        return "Complete";
+    }
+  }
+
   switch (item.currentStatus) {
+    case ContentStatus.WAITING_FOR_COPY:
+      return "Awaiting Copy";
+    case ContentStatus.READY_FOR_DESIGN:
+      return "Start Design";
+    case ContentStatus.IN_DESIGN:
+      return "Sync Design";
+    case ContentStatus.TRANSLATION_REQUESTED:
+      return "Await Translation";
+    case ContentStatus.TRANSLATION_READY:
+      return "Review Translation";
+    case ContentStatus.READY_FOR_FINAL_REVIEW:
+      return "Final Review";
+    case ContentStatus.READY_TO_POST:
+      return "POST on LI";
+    case ContentStatus.POSTED:
+      return "Complete";
     case ContentStatus.IMPORTED:
     case ContentStatus.IN_REVIEW:
-      return "Start review";
+      return "Review";
     case ContentStatus.CONTENT_APPROVED:
       if (item.queueMappingAvailability === "MISSING") {
-        return "Resolve template route";
+        return "Missing Template";
       }
-      return "Start design";
+      return "Start Design";
     case ContentStatus.DESIGN_REQUESTED:
     case ContentStatus.DESIGN_IN_PROGRESS:
-      return "Refresh design status";
+      return "Sync Design";
     case ContentStatus.DESIGN_READY:
-      return "Approve design";
+      return "Approve Design";
     case ContentStatus.DESIGN_FAILED:
-      return "Retry design";
+      return "Retry Design";
     case ContentStatus.CHANGES_REQUESTED:
-      return "Revise and resubmit";
+      return "Revise";
     case ContentStatus.DESIGN_APPROVED:
-      return item.translationRequired ? "Advance translation" : "Prepare publish";
+      return item.translationRequired ? "Start Translation" : "Final Review";
     case ContentStatus.TRANSLATION_PENDING:
-      return "Resolve translation";
+      return "Check Translation";
     case ContentStatus.TRANSLATION_APPROVED:
-      return "Prepare publish";
+      return "Final Review";
     case ContentStatus.READY_TO_PUBLISH:
-      return "Publish handoff";
+    case ContentStatus.READY_TO_POST:
+      return "POST on LI";
     case ContentStatus.PUBLISHED_MANUALLY:
+    case ContentStatus.POSTED:
       return "Complete";
     default:
-      return "Review state";
+      return "Review";
   }
 }
 

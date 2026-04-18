@@ -5,10 +5,12 @@ import {
   titleDerivationStrategySchema,
   worksheetSelectionStrategySchema,
 } from "./sheet-profiles";
+import { operationalContentStatusSchema } from "./infer-content-status";
 
 export const contentTypeSchema = z.enum(["STATIC_POST", "CAROUSEL"]);
 export const orchestratorTypeSchema = z.enum(["ZAPIER", "N8N", "MANUAL"]);
 export const importModeSchema = z.enum(["PREVIEW", "COMMIT"]);
+export const rowQualificationConfidenceSchema = z.enum(["HIGH", "MEDIUM", "LOW"]);
 
 const worksheetCandidateSchema = z.object({
   worksheetId: z.string().min(1),
@@ -28,7 +30,7 @@ const normalizedPlanningFieldsSchema = z.object({
   plannedDate: z.string().min(1).optional(),
   platformLabel: z.string().min(1).optional(),
   campaignLabel: z.string().min(1).optional(),
-  copyEnglish: z.string().min(1),
+  copyEnglish: z.string(),
   copyPortuguese: z.string().min(1).optional(),
   sourceAssetLink: z.string().min(1).optional(),
   contentDeadline: z.string().min(1).optional(),
@@ -48,6 +50,18 @@ const pushbackCandidatesSchema = z.object({
   designAssetUrl: z.string().min(1).optional(),
   publishedAt: z.string().min(1).optional(),
   publishedPostUrl: z.string().min(1).optional(),
+});
+
+const workflowIntentSchema = z.object({
+  translationRequired: z.boolean().default(false),
+  autoPostEnabled: z.boolean().default(false),
+  preferredDesignProvider: z.enum(["CANVA", "AI_VISUAL", "MANUAL"]).default("CANVA"),
+  reimportStrategy: z.enum(["UPDATE", "REPLACE", "KEEP_AS_IS"]).default("UPDATE"),
+  equivalenceTargetContentItemId: z.string().min(1).optional(),
+  conflictConfidence: z.enum(["HIGH_CONFIDENCE_DUPLICATE", "POSSIBLE_DUPLICATE", "NO_MEANINGFUL_MATCH"]).default(
+    "NO_MEANINGFUL_MATCH",
+  ),
+  operationalStatus: operationalContentStatusSchema.optional(),
 });
 
 export const contentIngestionPayloadSchema = z.object({
@@ -76,7 +90,7 @@ export const contentIngestionPayloadSchema = z.object({
       mappedFields: z.record(
         z.string(),
         z.object({
-          header: z.string().min(1),
+          header: z.string().min(1).nullish(),
           columnIndex: z.number().int().nonnegative().optional(),
         }),
       ),
@@ -84,7 +98,24 @@ export const contentIngestionPayloadSchema = z.object({
     }),
     rowQualification: z.object({
       disposition: rowDispositionSchema,
+      confidence: rowQualificationConfidenceSchema.default("MEDIUM"),
       reasons: z.array(z.string()).default([]),
+      signals: z.object({
+        hasDate: z.boolean().default(false),
+        hasTitle: z.boolean().default(false),
+        hasCopy: z.boolean().default(false),
+        hasPlatform: z.boolean().default(false),
+        hasLink: z.boolean().default(false),
+        hasPublicationMarker: z.boolean().default(false),
+      }).default({
+        hasDate: false,
+        hasTitle: false,
+        hasCopy: false,
+        hasPlatform: false,
+        hasLink: false,
+        hasPublicationMarker: false,
+      }),
+      isPublishedRow: z.boolean().default(false),
     }),
     titleDerivation: z.object({
       strategy: titleDerivationStrategySchema,
@@ -95,14 +126,24 @@ export const contentIngestionPayloadSchema = z.object({
   planning: normalizedPlanningFieldsSchema,
   sourceMetadata: sourceMetadataSchema,
   pushbackCandidates: pushbackCandidatesSchema.default({}),
+  workflow: workflowIntentSchema.default({
+    translationRequired: false,
+    autoPostEnabled: false,
+    preferredDesignProvider: "CANVA",
+    reimportStrategy: "UPDATE",
+    conflictConfidence: "NO_MEANINGFUL_MATCH",
+  }),
   content: z.object({
     canonicalKey: z.string().min(1),
     profile: contentProfileSchema,
     contentType: contentTypeSchema,
     title: z.string().min(1),
-    copy: z.string().min(1),
+    copy: z.string(),
     locale: z.string().default("en"),
     translationRequired: z.boolean().default(false),
+    translationCopy: z.string().min(1).optional(),
+    translationRequestedAt: z.iso.datetime().optional(),
+    translationGeneratedAt: z.iso.datetime().optional(),
   }),
 });
 

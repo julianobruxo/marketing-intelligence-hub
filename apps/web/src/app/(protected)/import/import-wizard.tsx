@@ -1,916 +1,1179 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
-  ArrowLeft,
   CheckCircle2,
-  ExternalLink,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
   FileSpreadsheet,
   FolderOpen,
   Loader2,
   Search,
+  X,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { DRIVE_IMPORT_FOLDER_NAME, DRIVE_IMPORT_KEYWORD, DRIVE_IMPORT_PAGE_SIZE } from "@/modules/content-intake/domain/drive-import";
 import {
-  DRIVE_IMPORT_KEYWORD,
-  MOCK_DRIVE_IMPORT_FOLDER,
-  getDriveImportSourceGroups,
-  groupDriveImportSpreadsheets,
-  listDriveImportSpreadsheets,
   type DriveSourceGroup,
   type DriveSpreadsheetRecord,
-} from "@/modules/content-intake/infrastructure/drive-import-catalog";
+  filterDriveSpreadsheetRecords,
+  formatDriveSourceGroupLabel,
+  getDriveImportSourceGroups,
+  paginateDriveSpreadsheetRecords,
+} from "@/modules/content-intake/domain/drive-import";
 import {
-  commitImportAction,
-  previewImportAction,
-  type CommitResult,
-  type PreviewResult,
-  type RowOutcome,
-} from "@/modules/content-intake/application/import-wizard-actions";
+  scanDriveImportCatalogAction,
+  sendStagedSpreadsheetToWorkflowQueueAction,
+  stageDriveImportSpreadsheetsAction,
+  type DriveImportScanResponse,
+  type StagedSpreadsheetSnapshot,
+} from "@/modules/content-intake/application/drive-import-workflow";
+import type { DriveReimportStrategy } from "@prisma/client";
 
-type WizardStep = "drive" | "worksheet" | "preview" | "commit";
+type ScanState = "idle" | "armed" | "scanning" | "ready";
 
-function formatProfileLabel(profile: string): string {
-  switch (profile) {
-    case "YANN":
-      return "Yann";
-    case "YURI":
-      return "Yuri";
-    case "SHAWN":
-      return "Shawn";
-    case "SOPHIAN_YACINE":
-      return "Sophian Yacine";
-    case "ZAZMIC_PAGE":
-      return "Zazmic Page";
+type ActivityEntry = {
+  id: string;
+  label: string;
+  detail: string;
+  occurredAt: string;
+};
+
+type PersistedImportWizardState = {
+  scanState: ScanState;
+  query: string;
+  appliedQuery: string;
+  activeGroup: DriveSourceGroup | "ALL";
+  page: number;
+  scanResult: DriveImportScanResponse | null;
+  stagedSpreadsheets: StagedSpreadsheetSnapshot[];
+  selectedSpreadsheetIds: string[];
+  selectedStagedIds: string[];
+  reimportStrategy: DriveReimportStrategy;
+  activity: ActivityEntry[];
+};
+
+const IMPORT_WIZARD_SESSION_STORAGE_KEY = "mih.import-wizard.v1";
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(value));
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function formatSourceGroupLabel(group: DriveSourceGroup | "ALL") {
+  return formatDriveSourceGroupLabel(group);
+}
+
+function formatReimportStrategy(value: DriveReimportStrategy) {
+  return value.toLowerCase().replaceAll("_", " ");
+}
+
+function buildSelectionLabel(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? "" : "s"} selected`;
+}
+
+function sumBy<T>(items: T[], selector: (item: T) => number) {
+  return items.reduce((sum, item) => sum + selector(item), 0);
+}
+
+function uniqueByDriveFileId(items: StagedSpreadsheetSnapshot[]) {
+  const map = new Map<string, StagedSpreadsheetSnapshot>();
+  for (const item of items) {
+    map.set(item.driveFileId, item);
+  }
+  return Array.from(map.values()).sort((left, right) => right.importedAt.localeCompare(left.importedAt));
+}
+
+function isValidSourceGroup(value: unknown): value is DriveSourceGroup | "ALL" {
+  return value === "ALL" || getDriveImportSourceGroups().includes(value as DriveSourceGroup);
+}
+
+function normalizeStoredIds(value: unknown) {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function getRecordSummary(record: DriveSpreadsheetRecord) {
+  return `${record.sourceContext.owner} - ${formatDriveSourceGroupLabel(record.sourceContext.sourceGroup)} - ${record.sourceContext.region}`;
+}
+
+function getStageStatusLabel(record: StagedSpreadsheetSnapshot) {
+  switch (record.state) {
+    case "SENT_TO_QUEUE":
+      return "Queued";
+    case "PARTIALLY_SENT":
+      return "Partially queued";
+    case "NEEDS_REIMPORT_DECISION":
+      return "Needs decision";
     default:
-      return profile.toLowerCase().replaceAll("_", " ");
+      return "Staged";
   }
 }
 
-function profileBadgeStyle(profile: string): React.CSSProperties {
-  switch (profile) {
-    case "YANN":
-      return { backgroundColor: "#DBEAFE", color: "#1E40AF" };
-    case "YURI":
-      return { backgroundColor: "#FEE2E2", color: "#991B1B" };
-    case "SHAWN":
-      return { backgroundColor: "#D1FAE5", color: "#065F46" };
-    case "SOPHIAN_YACINE":
-      return { backgroundColor: "#E9D5FF", color: "#6B21A8" };
-    case "ZAZMIC_PAGE":
-      return { backgroundColor: "#FFEDD5", color: "#9A3412" };
-    default:
-      return { backgroundColor: "#F1F5F9", color: "#475569" };
-  }
-}
-
-function outcomeLabel(outcome: RowOutcome): string {
-  switch (outcome) {
-    case "IMPORTED":
-      return "Will import";
-    case "REPROCESSED":
-      return "Reprocess";
-    case "DUPLICATE":
-      return "Duplicate";
-    case "SKIPPED":
-      return "Skipped";
-    case "REJECTED":
-      return "Rejected";
-  }
-}
-
-function outcomeBadgeClass(outcome: RowOutcome): string {
-  switch (outcome) {
-    case "IMPORTED":
+function getStageTone(record: StagedSpreadsheetSnapshot) {
+  switch (record.state) {
+    case "SENT_TO_QUEUE":
       return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    case "REPROCESSED":
+    case "PARTIALLY_SENT":
       return "border-amber-200 bg-amber-50 text-amber-700";
-    case "DUPLICATE":
-      return "border-slate-200 bg-slate-100 text-slate-500";
-    case "SKIPPED":
-      return "border-slate-200 bg-slate-50 text-slate-400";
-    case "REJECTED":
+    case "NEEDS_REIMPORT_DECISION":
       return "border-rose-200 bg-rose-50 text-rose-700";
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-700";
   }
 }
 
-function outcomeRowClass(outcome: RowOutcome): string {
-  switch (outcome) {
-    case "IMPORTED":
-      return "hover:bg-slate-50/60";
-    case "REPROCESSED":
-      return "border-l-2 border-amber-300 bg-amber-50/30 hover:bg-amber-50/60";
-    case "DUPLICATE":
-      return "opacity-60 hover:opacity-80";
-    case "SKIPPED":
-      return "opacity-50 hover:opacity-70";
-    case "REJECTED":
-      return "border-l-2 border-rose-300 bg-rose-50/30 hover:bg-rose-50/60";
-  }
-}
-
-function formatDateTime(iso: string): string {
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(iso));
-}
-
-function formatSourceGroup(group: DriveSourceGroup | "ALL") {
-  return group === "ALL" ? "All" : group;
-}
-
-function SourceContextPills({ record }: { record: DriveSpreadsheetRecord }) {
+function SummaryCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
   return (
-    <div className="flex flex-wrap items-center gap-2 text-[11px]">
-      <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-600">
-        <FolderOpen className="h-3 w-3" />
-        {record.folderName}
-      </span>
-      <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-600">
-        {record.sourceContext.sourceGroup}
-      </span>
-      <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-600">
-        {record.sourceContext.region}
-      </span>
-      <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-600">
-        {record.sourceContext.audience}
-      </span>
+    <div className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+      <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{value}</p>
+      <p className="mt-1 text-sm text-slate-500">{detail}</p>
     </div>
   );
 }
 
-function SpreadsheetRow({
+function MetaChip({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+      {children}
+    </span>
+  );
+}
+
+function SectionHeading({ children }: { children: ReactNode }) {
+  return <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{children}</p>;
+}
+
+function SpreadsheetResultRow({
   record,
   selected,
-  onSelect,
+  onToggle,
 }: {
   record: DriveSpreadsheetRecord;
   selected: boolean;
-  onSelect: () => void;
+  onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <label
       className={cn(
-        "group flex w-full items-start justify-between gap-4 rounded-2xl border px-4 py-4 text-left transition-default",
+        "group flex cursor-pointer items-start justify-between gap-4 rounded-2xl border px-4 py-4 text-left transition-default",
         selected
-          ? "border-slate-950 bg-slate-950 text-white shadow-[0_18px_36px_rgba(15,23,42,0.16)]"
+          ? "border-slate-950 bg-slate-50 shadow-sm"
           : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50",
       )}
     >
-      <div className="min-w-0 space-y-2">
-        <div className="flex items-center gap-2">
-          <FileSpreadsheet className={cn("h-4 w-4", selected ? "text-white" : "text-slate-500")} />
-          <p className="truncate font-medium">{record.spreadsheetName}</p>
-        </div>
-        <p className={cn("text-sm leading-6", selected ? "text-slate-300" : "text-slate-500")}>
-          {record.description}
-        </p>
-        <div className="flex flex-wrap items-center gap-2 text-[11px]">
-          <span
-            className={cn(
-              "inline-flex rounded-full px-2.5 py-1 font-medium",
-              selected ? "bg-white/10 text-white" : "bg-slate-100 text-slate-600",
-            )}
-          >
-            {record.sourceContext.owner}
-          </span>
-          {record.sourceContext.tags.slice(0, 3).map((tag) => (
-            <span
-              key={tag}
-              className={cn(
-                "inline-flex rounded-full px-2.5 py-1 font-medium",
-                selected ? "bg-white/10 text-white" : "bg-slate-100 text-slate-600",
-              )}
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      </div>
+      <input type="checkbox" checked={selected} onChange={onToggle} className="sr-only" />
 
-      <div className="shrink-0 space-y-2 text-right">
-        <span
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <div
           className={cn(
-            "inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium",
+            "mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border",
             selected
-              ? "border-white/20 bg-white/10 text-white"
+              ? "border-slate-950 bg-slate-950 text-white"
               : "border-slate-200 bg-slate-50 text-slate-500",
           )}
         >
-          {record.worksheets.length} tabs
-        </span>
-        <div className="text-[11px] leading-5 text-slate-400">
-          {record.sourceContext.sourceGroup}
-          <br />
-          {record.sourceContext.region}
+          {selected ? <CheckCircle2 className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold text-slate-950">{record.spreadsheetName}</p>
+            <Badge variant="outline" className="border-slate-200 bg-slate-50 text-[11px] text-slate-600">
+              {DRIVE_IMPORT_KEYWORD}
+            </Badge>
+            <Badge variant="outline" className="border-slate-200 bg-slate-50 text-[11px] text-slate-600">
+              {formatDriveSourceGroupLabel(record.sourceContext.sourceGroup)}
+            </Badge>
+          </div>
+
+          <p className="mt-1 text-sm leading-6 text-slate-500">{record.description}</p>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <MetaChip>{record.sourceContext.owner}</MetaChip>
+            <MetaChip>{record.sourceContext.region}</MetaChip>
+            {record.sourceContext.tags.slice(0, 2).map((tag) => (
+              <MetaChip key={tag}>{tag}</MetaChip>
+            ))}
+            {record.matchingSignals.slice(0, 2).map((signal) => (
+              <MetaChip key={signal}>{signal}</MetaChip>
+            ))}
+          </div>
         </div>
       </div>
-    </button>
+
+      <div className="shrink-0 text-right">
+        <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+          <FolderOpen className="h-3 w-3" />
+          {record.worksheets.length > 0 ? `${record.worksheets.length} tabs` : "Worksheets auto-detected"}
+        </div>
+        <p className="mt-2 text-[11px] leading-5 text-slate-400">Updated {formatDate(record.lastUpdatedAt)}</p>
+        <p className="mt-1 max-w-[16rem] text-[11px] leading-5 text-slate-400">{getRecordSummary(record)}</p>
+      </div>
+    </label>
   );
 }
 
-function SourceContextCard({ record }: { record: DriveSpreadsheetRecord }) {
+function StagedSpreadsheetRow({
+  record,
+  selected,
+  onToggle,
+}: {
+  record: StagedSpreadsheetSnapshot;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-            Source context
-          </p>
-          <h2 className="mt-2 text-base font-semibold text-slate-950">{record.spreadsheetName}</h2>
+    <label
+      className={cn(
+        "group flex cursor-pointer items-start justify-between gap-4 rounded-2xl border px-4 py-4 text-left transition-default",
+        selected
+          ? "border-slate-950 bg-slate-50 shadow-sm"
+          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50",
+      )}
+    >
+      <input type="checkbox" checked={selected} onChange={onToggle} className="sr-only" />
+
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <div
+          className={cn(
+            "mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border",
+            selected
+              ? "border-slate-950 bg-slate-950 text-white"
+              : "border-slate-200 bg-slate-50 text-slate-500",
+          )}
+        >
+          {selected ? <CheckCircle2 className="h-4 w-4" /> : <Clock3 className="h-4 w-4" />}
         </div>
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-500">
-          {record.sheetProfileKey}
-        </span>
-      </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <MetaCard label="Owner" value={record.sourceContext.owner} />
-        <MetaCard label="Source group" value={record.sourceContext.sourceGroup} />
-        <MetaCard label="Region" value={record.sourceContext.region} />
-        <MetaCard label="Audience" value={record.sourceContext.audience} />
-      </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold text-slate-950">{record.spreadsheetName}</p>
+            <Badge variant="outline" className={cn("text-[11px]", getStageTone(record))}>
+              {getStageStatusLabel(record)}
+            </Badge>
+            <Badge variant="outline" className="border-slate-200 bg-slate-50 text-[11px] text-slate-600">
+              {formatReimportStrategy(record.reimportStrategy)}
+            </Badge>
+          </div>
 
-      <div className="mt-4">
-        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Tags</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {record.sourceContext.tags.map((tag) => (
-            <span
-              key={tag}
-              className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600"
-            >
-              {tag}
+          <p className="mt-1 text-sm leading-6 text-slate-500">
+            {record.owner} - {formatDriveSourceGroupLabel(record.sourceGroup as DriveSourceGroup)} - {record.lastUpdatedAt ? formatDate(record.lastUpdatedAt) : "Unknown update"}
+          </p>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <MetaChip>{record.totalRowsDetected} rows</MetaChip>
+            <MetaChip>{record.qualifiedRowsDetected} valid</MetaChip>
+            <MetaChip>{record.alreadyPublishedRowCount} already published</MetaChip>
+            <MetaChip>{record.conflictRowsDetected} conflicts</MetaChip>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+              Imported {record.importedRowCount}
             </span>
-          ))}
+            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+              Updated {record.updatedRowCount}
+            </span>
+            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+              Replaced {record.replacedRowCount}
+            </span>
+            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+              Kept {record.keptRowCount}
+            </span>
+          </div>
         </div>
       </div>
-    </section>
+
+      <div className="shrink-0 text-right">
+        <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">Imported</p>
+        <p className="mt-1 text-sm font-medium text-slate-900">{formatDateTime(record.importedAt)}</p>
+        <p className="mt-2 text-[11px] leading-5 text-slate-400">
+          {record.queuedAt ? `Queued ${formatDateTime(record.queuedAt)}` : "Waiting to be sent to queue"}
+        </p>
+      </div>
+    </label>
   );
 }
 
-function MetaCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-slate-100 bg-slate-50/70 px-3 py-3">
-      <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{label}</p>
-      <p className="mt-1 text-sm font-medium text-slate-900">{value}</p>
-    </div>
-  );
-}
-
-function DirectoryStep({
-  spreadsheets,
-  selectedSpreadsheet,
-  selectedSpreadsheetId,
-  onSelectSpreadsheet,
-  onContinue,
+function ConfirmModal({
+  open,
+  selectedRecords,
+  reimportStrategy,
+  onStrategyChange,
+  onCancel,
+  onConfirm,
+  confirming,
 }: {
-  spreadsheets: DriveSpreadsheetRecord[];
-  selectedSpreadsheet: DriveSpreadsheetRecord | null;
-  selectedSpreadsheetId: string;
-  onSelectSpreadsheet: (spreadsheet: DriveSpreadsheetRecord) => void;
-  onContinue: () => void;
+  open: boolean;
+  selectedRecords: DriveSpreadsheetRecord[];
+  reimportStrategy: DriveReimportStrategy;
+  onStrategyChange: (value: DriveReimportStrategy) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  confirming: boolean;
 }) {
-  const grouped = useMemo(() => groupDriveImportSpreadsheets(spreadsheets), [spreadsheets]);
-  const sourceGroups = getDriveImportSourceGroups();
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onCancel();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onCancel]);
+
+  if (!open) {
+    return null;
+  }
 
   return (
-    <div className="space-y-5">
-      <section className="space-y-3">
-        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-          Google Drive-first import
-        </p>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-          Select a spreadsheet, then choose a worksheet.
-        </h1>
-        <p className="max-w-3xl text-sm leading-6 text-slate-500">
-          Browse the designated Drive folder, search across all files, and filter to spreadsheets
-          that match{" "}
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-            {DRIVE_IMPORT_KEYWORD}
-          </code>
-          .
-        </p>
-      </section>
-
-      <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
+      onClick={onCancel}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-confirm-title"
+        className="w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-medium text-slate-900">Browse Drive folder</p>
-            <p className="text-sm text-slate-500">{MOCK_DRIVE_IMPORT_FOLDER}</p>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Confirm import</p>
+            <h2 id="import-confirm-title" className="mt-1 text-xl font-semibold text-slate-950">
+              Stage selected spreadsheets
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              The platform will inspect the selected spreadsheets, auto-pick valid worksheets, normalize their rows,
+              and store the results in staging before queue ingestion.
+            </p>
           </div>
-          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-500">
-            <Search className="h-3 w-3" />
-            {spreadsheets.length} matching spreadsheets
-          </span>
-        </div>
 
-        <div className="mt-4 space-y-5">
-          {sourceGroups.map((group) => {
-            const groupRows = group === "ALL" ? spreadsheets : grouped[group];
-
-            if (groupRows.length === 0) {
-              return null;
-            }
-
-            return (
-              <div key={group} className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
-                    {formatSourceGroup(group)}
-                  </p>
-                  <span className="text-xs text-slate-400">{groupRows.length}</span>
-                </div>
-                <div className="space-y-3">
-                  {groupRows.map((record) => (
-                    <SpreadsheetRow
-                      key={record.driveFileId}
-                      record={record}
-                      selected={selectedSpreadsheetId === record.driveFileId}
-                      onSelect={() => onSelectSpreadsheet(record)}
-                    />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {selectedSpreadsheet ? <SourceContextCard record={selectedSpreadsheet} /> : null}
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-500">
-          {selectedSpreadsheet
-            ? `Selected: ${selectedSpreadsheet.spreadsheetName}`
-            : "Choose a spreadsheet from the folder to continue."}
-        </p>
-        <Button
-          onClick={onContinue}
-          disabled={!selectedSpreadsheet}
-          className="transition-default disabled:opacity-50"
-          style={{ backgroundColor: "#E8584A", color: "white" }}
-        >
-          Select worksheet
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function WorksheetStep({
-  spreadsheet,
-  selectedWorksheetId,
-  onSelectWorksheet,
-  onBack,
-  onPreview,
-  isLoading,
-}: {
-  spreadsheet: DriveSpreadsheetRecord;
-  selectedWorksheetId: string;
-  onSelectWorksheet: (worksheetId: string) => void;
-  onBack: () => void;
-  onPreview: () => void;
-  isLoading: boolean;
-}) {
-  const selectedWorksheet =
-    spreadsheet.worksheets.find((worksheet) => worksheet.worksheetId === selectedWorksheetId) ??
-    spreadsheet.worksheets[0] ??
-    null;
-
-  return (
-    <div className="space-y-6">
-      <div className="space-y-2">
-        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-          Worksheet selection
-        </p>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-          Choose a tab in {spreadsheet.spreadsheetName}
-        </h1>
-        <p className="max-w-3xl text-sm leading-6 text-slate-500">
-          Select the worksheet you want to normalize. Switching spreadsheets clears this selection
-          and any dependent preview state.
-        </p>
-      </div>
-
-      <SourceContextCard record={spreadsheet} />
-
-      <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          {spreadsheet.worksheets.map((worksheet) => {
-            const selected = worksheet.worksheetId === selectedWorksheetId;
-
-            return (
-              <button
-                key={worksheet.worksheetId}
-                type="button"
-                onClick={() => onSelectWorksheet(worksheet.worksheetId)}
-                className={cn(
-                  "rounded-xl border px-3 py-2 text-left text-sm transition-default",
-                  selected
-                    ? "border-slate-950 bg-slate-950 text-white"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-[11px] font-semibold">
-                    {worksheet.worksheetName.slice(0, 1)}
-                  </span>
-                  <span className="font-medium">{worksheet.worksheetName}</span>
-                </div>
-                {selected ? <p className="mt-1 text-xs text-slate-300">Selected for preview</p> : null}
-              </button>
-            );
-          })}
-        </div>
-
-        {selectedWorksheet ? (
-          <p className="mt-4 text-sm text-slate-500">
-            Selected tab: <span className="font-medium text-slate-900">{selectedWorksheet.worksheetName}</span>
-          </p>
-        ) : null}
-      </section>
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button
-          onClick={onBack}
-          variant="outline"
-          className="border-slate-300 text-slate-700 hover:bg-slate-50"
-        >
-          <ArrowLeft className="mr-1.5 h-4 w-4" />
-          Back to Drive
-        </Button>
-        <Button
-          onClick={onPreview}
-          disabled={isLoading}
-          className="transition-default disabled:opacity-50"
-          style={{ backgroundColor: "#E8584A", color: "white" }}
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              Loading preview...
-            </>
-          ) : (
-            "Preview normalized rows"
-          )}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function PreviewStep({
-  preview,
-  onCommit,
-  onBack,
-  isLoading,
-}: {
-  preview: PreviewResult;
-  onCommit: () => void;
-  onBack: () => void;
-  isLoading: boolean;
-}) {
-  const hasCommittable = preview.counts.imported + preview.counts.reprocessed > 0;
-
-  return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Preview</p>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
-          Review normalized rows before importing
-        </h1>
-        <p className="text-sm text-slate-500">
-          Source: {preview.source.sourceContext.sourceGroup} · {preview.source.spreadsheetName} ·{" "}
-          {preview.source.worksheetName}
-        </p>
-      </div>
-
-      <SourceContextCard
-        record={{
-          driveFileId: preview.source.driveFileId,
-          spreadsheetId: preview.source.spreadsheetId,
-          spreadsheetName: preview.source.spreadsheetName,
-          folderName: preview.source.folderName,
-          description: preview.source.sourceContext.audience,
-          sourceContext: preview.source.sourceContext,
-          sheetProfileKey: "preview",
-          sheetProfileVersion: 1,
-          worksheets: [],
-        }}
-      />
-
-      <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-4 shadow-sm">
-        <div className="flex flex-wrap items-center gap-4 text-sm">
-          <div>
-            <span className="font-semibold text-emerald-600">{preview.counts.imported}</span>
-            <span className="ml-1 text-slate-500">will import</span>
-          </div>
-          {preview.counts.reprocessed > 0 ? (
-            <div>
-              <span className="font-semibold text-amber-500">{preview.counts.reprocessed}</span>
-              <span className="ml-1 text-slate-500">reprocess</span>
-            </div>
-          ) : null}
-          <div>
-            <span className="font-semibold text-slate-400">{preview.counts.duplicate}</span>
-            <span className="ml-1 text-slate-500">duplicate</span>
-          </div>
-          <div>
-            <span className="font-semibold text-slate-400">{preview.counts.skipped}</span>
-            <span className="ml-1 text-slate-500">skipped</span>
-          </div>
-          <div>
-            <span className="font-semibold text-rose-500">{preview.counts.rejected}</span>
-            <span className="ml-1 text-slate-500">rejected</span>
-          </div>
-          <div className="ml-auto text-slate-500">{preview.counts.total} total rows</div>
-        </div>
-      </section>
-
-      <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-        <div className="grid grid-cols-[3rem_minmax(0,1fr)_auto_auto_7rem_minmax(0,1fr)] items-center gap-x-4 border-b border-slate-100 bg-slate-50/80 px-5 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-          <span>#</span>
-          <span>Title</span>
-          <span>Profile</span>
-          <span>Type</span>
-          <span>Outcome</span>
-          <span>Reason</span>
-        </div>
-
-        <div>
-          {preview.rows.map((row) => (
-            <div
-              key={row.rowId}
-              className={cn(
-                "grid grid-cols-[3rem_minmax(0,1fr)_auto_auto_7rem_minmax(0,1fr)] items-center gap-x-4 border-b border-slate-100 px-5 py-3 text-sm last:border-b-0 transition",
-                outcomeRowClass(row.outcome),
-              )}
-            >
-              <span className="text-xs text-slate-400">{row.rowNumber}</span>
-              <p className="truncate font-medium text-slate-900">{row.title}</p>
-              <span
-                className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap"
-                style={profileBadgeStyle(row.profile)}
-              >
-                {formatProfileLabel(row.profile)}
-              </span>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600 whitespace-nowrap">
-                {row.contentType === "STATIC_POST" ? "Static" : "Carousel"}
-              </span>
-              <span
-                className={cn(
-                  "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap",
-                  outcomeBadgeClass(row.outcome),
-                )}
-              >
-                {outcomeLabel(row.outcome)}
-              </span>
-              <p
-                className={cn(
-                  "truncate text-xs",
-                  row.outcome === "REJECTED" ? "text-rose-600" : "text-slate-500",
-                )}
-              >
-                {row.reason || "—"}
-              </p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          onClick={onCommit}
-          disabled={!hasCommittable || isLoading}
-          className="transition-default disabled:opacity-50"
-          style={{ backgroundColor: "#E8584A", color: "white" }}
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              Importing rows...
-            </>
-          ) : (
-            "Import into platform"
-          )}
-        </Button>
-        <Button
-          onClick={onBack}
-          variant="outline"
-          className="border-slate-300 text-slate-700 hover:bg-slate-50"
-        >
-          <ArrowLeft className="mr-1.5 h-4 w-4" />
-          Back to worksheet
-        </Button>
-        {!hasCommittable ? (
-          <p className="text-sm text-slate-500">
-            No importable rows remain. Everything in this tab is duplicate, skipped, or rejected.
-          </p>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function CommitResultStep({
-  result,
-  onImportMore,
-}: {
-  result: CommitResult;
-  onImportMore: () => void;
-}) {
-  return (
-    <div className="space-y-5">
-      <div className="flex items-start gap-3">
-        <CheckCircle2 className="mt-0.5 h-6 w-6 flex-shrink-0 text-emerald-500" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-950">Import complete</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Content is now in the queue and ready for the next Pipeline #1 workflow step.
-          </p>
-        </div>
-      </div>
-
-      <SourceContextCard
-        record={{
-          driveFileId: result.source.driveFileId,
-          spreadsheetId: result.source.spreadsheetId,
-          spreadsheetName: result.source.spreadsheetName,
-          folderName: result.source.folderName,
-          description: result.source.sourceContext.audience,
-          sourceContext: result.source.sourceContext,
-          sheetProfileKey: "result",
-          sheetProfileVersion: 1,
-          worksheets: [],
-        }}
-      />
-
-      <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-4 space-y-3 shadow-sm">
-        <SummaryRow
-          icon={<CheckCircle2 className="h-4 w-4 text-emerald-500" />}
-          label="Imported"
-          value={`${result.counts.imported} item${result.counts.imported !== 1 ? "s" : ""}`}
-        />
-        {result.counts.reprocessed > 0 ? (
-          <SummaryRow
-            icon={<span className="inline-block h-4 w-4 text-center text-amber-500">↻</span>}
-            label="Reprocessed"
-            value={`${result.counts.reprocessed} item${result.counts.reprocessed !== 1 ? "s" : ""}`}
-          />
-        ) : null}
-        <SummaryRow
-          icon={<span className="inline-block h-4 w-4 text-center text-slate-400">—</span>}
-          label="Skipped"
-          value={`${result.counts.skipped} row${result.counts.skipped !== 1 ? "s" : ""}`}
-        />
-        <SummaryRow
-          icon={<AlertTriangle className="h-4 w-4 text-rose-400" />}
-          label="Rejected"
-          value={`${result.counts.rejected} row${result.counts.rejected !== 1 ? "s" : ""}`}
-        />
-        <div className="border-t border-slate-100 pt-3 text-sm text-slate-500">
-          {result.counts.total} total rows processed
-        </div>
-      </section>
-
-      <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-4 space-y-2 shadow-sm">
-        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-          Drive source
-        </p>
-        <div className="space-y-1.5 text-sm">
-          <div className="flex items-start justify-between gap-4">
-            <span className="text-slate-500">Folder</span>
-            <span className="text-slate-900">{result.source.folderName}</span>
-          </div>
-          <div className="flex items-start justify-between gap-4">
-            <span className="text-slate-500">Spreadsheet</span>
-            <span className="text-slate-900">{result.source.spreadsheetName}</span>
-          </div>
-          <div className="flex items-start justify-between gap-4">
-            <span className="text-slate-500">Worksheet</span>
-            <span className="text-slate-900">{result.source.worksheetName}</span>
-          </div>
-          <div className="flex items-start justify-between gap-4">
-            <span className="text-slate-500">Source group</span>
-            <span className="text-slate-900">{result.source.sourceContext.sourceGroup}</span>
-          </div>
-          <div className="flex items-start justify-between gap-4">
-            <span className="text-slate-500">Completed</span>
-            <span className="text-slate-900">{formatDateTime(result.completedAt)}</span>
-          </div>
-        </div>
-      </section>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Button asChild className="transition-default" style={{ backgroundColor: "#E8584A", color: "white" }}>
-          <Link href="/queue">View in queue</Link>
-        </Button>
-        <Button
-          onClick={onImportMore}
-          variant="outline"
-          className="border-slate-300 text-slate-700 hover:bg-slate-50"
-        >
-          Import another spreadsheet
-        </Button>
-        {result.firstImportedItemId ? (
-          <Link
-            href={`/queue/${result.firstImportedItemId}`}
-            className="flex items-center gap-1 text-sm text-slate-500 underline underline-offset-2 hover:text-slate-900"
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-default hover:border-slate-400 hover:text-slate-900"
+            aria-label="Close modal"
           >
-            View first imported item
-            <ExternalLink className="h-3 w-3" />
-          </Link>
-        ) : null}
-      </div>
-    </div>
-  );
-}
+            <X className="h-4 w-4" />
+          </button>
+        </div>
 
-function SummaryRow({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex items-center gap-2 text-sm">
-      {icon}
-      <span className="text-slate-500">{label}:</span>
-      <span className="font-medium text-slate-900">{value}</span>
+        <div className="mt-5 space-y-3">
+          {selectedRecords.map((record) => (
+            <div key={record.driveFileId} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">{record.spreadsheetName}</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {record.sourceContext.owner} - {formatDriveSourceGroupLabel(record.sourceContext.sourceGroup)}
+                  </p>
+                </div>
+                <Badge variant="outline" className="border-slate-200 bg-white text-[11px] text-slate-600">
+                  {record.worksheets.length > 0 ? `${record.worksheets.length} tabs` : "Auto-detected"}
+                </Badge>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Reimport strategy</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            {(["UPDATE", "REPLACE", "KEEP_AS_IS"] as const).map((option) => {
+              const active = reimportStrategy === option;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onStrategyChange(option)}
+                  className={cn(
+                    "rounded-2xl border px-3 py-3 text-left text-sm transition-default",
+                    active
+                      ? "border-slate-950 bg-white text-slate-950 shadow-sm"
+                      : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white",
+                  )}
+                >
+                  <p className="font-semibold">{formatReimportStrategy(option)}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    {option === "UPDATE"
+                      ? "Update matching workflow items when the same source row is already known."
+                      : option === "REPLACE"
+                        ? "Replace the existing item with the latest spreadsheet version."
+                        : "Keep the current item as-is and preserve the existing workflow state."}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-500">
+            The selected spreadsheets will be staged first. Valid rows enter the Workflow Queue only after the next
+            confirmation step.
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancel}
+              className="border-slate-300 text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={onConfirm}
+              disabled={confirming}
+              className="transition-default disabled:opacity-50"
+              style={{ backgroundColor: "#E8584A", color: "white" }}
+            >
+              {confirming ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  Staging...
+                </>
+              ) : (
+                "Confirm stage"
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
 export function ImportWizard() {
+  const [scanState, setScanState] = useState<ScanState>("idle");
   const [query, setQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState<DriveSourceGroup | "ALL">("ALL");
-  const spreadsheets = useMemo(
+  const [page, setPage] = useState(1);
+  const [scanResult, setScanResult] = useState<DriveImportScanResponse | null>(null);
+  const [stagedSpreadsheets, setStagedSpreadsheets] = useState<StagedSpreadsheetSnapshot[]>([]);
+  const [selectedSpreadsheetIds, setSelectedSpreadsheetIds] = useState<Set<string>>(new Set());
+  const [selectedStagedIds, setSelectedStagedIds] = useState<Set<string>>(new Set());
+  const [reimportStrategy, setReimportStrategy] = useState<DriveReimportStrategy>("UPDATE");
+  const [isScanning, setIsScanning] = useState(false);
+  const [isStaging, setIsStaging] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [hasHydratedState, setHasHydratedState] = useState(false);
+
+  const loadedScanRecords = useMemo(() => scanResult?.results.map((result) => result.record) ?? [], [scanResult]);
+  const availableSourceGroups = useMemo(() => {
+    if (loadedScanRecords.length === 0) {
+      return ["ALL"] as Array<DriveSourceGroup | "ALL">;
+    }
+
+    const presentGroups = new Set(loadedScanRecords.map((record) => record.sourceContext.sourceGroup));
+    return getDriveImportSourceGroups().filter(
+      (group): group is DriveSourceGroup | "ALL" => group === "ALL" || presentGroups.has(group),
+    );
+  }, [loadedScanRecords]);
+  const filteredScanRecords = useMemo(
     () =>
-      listDriveImportSpreadsheets({
-        query,
+      filterDriveSpreadsheetRecords(loadedScanRecords, {
+        query: appliedQuery,
         sourceGroup: activeGroup,
       }),
-    [query, activeGroup],
+    [loadedScanRecords, appliedQuery, activeGroup],
   );
-  const allSpreadsheets = useMemo(() => listDriveImportSpreadsheets(), []);
-  const [step, setStep] = useState<WizardStep>("drive");
-  const [selectedSpreadsheetId, setSelectedSpreadsheetId] = useState(
-    allSpreadsheets[0]?.driveFileId ?? "",
+  const paginatedScanRecords = useMemo(
+    () => paginateDriveSpreadsheetRecords(filteredScanRecords, page, DRIVE_IMPORT_PAGE_SIZE),
+    [filteredScanRecords, page],
   );
-  const [selectedWorksheetId, setSelectedWorksheetId] = useState(
-    allSpreadsheets[0]?.worksheets[0]?.worksheetId ?? "",
-  );
-  const [preview, setPreview] = useState<PreviewResult | null>(null);
-  const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
-  const [isPreviewing, setIsPreviewing] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-
-  const selectedSpreadsheet = useMemo(
-    () =>
-      allSpreadsheets.find((spreadsheet) => spreadsheet.driveFileId === selectedSpreadsheetId) ??
-      null,
-    [allSpreadsheets, selectedSpreadsheetId],
+  const visibleScanRecords = paginatedScanRecords.results.map((result) => result.record);
+  const selectedScanRecords = useMemo(
+    () => loadedScanRecords.filter((record) => selectedSpreadsheetIds.has(record.driveFileId)),
+    [loadedScanRecords, selectedSpreadsheetIds],
   );
 
-  const selectedWorksheet = useMemo(() => {
-    if (!selectedSpreadsheet) {
-      return null;
-    }
+  const pageCount = paginatedScanRecords.totalPages;
 
-    return (
-      selectedSpreadsheet.worksheets.find(
-        (worksheet) => worksheet.worksheetId === selectedWorksheetId,
-      ) ?? selectedSpreadsheet.worksheets[0] ?? null
-    );
-  }, [selectedSpreadsheet, selectedWorksheetId]);
-
-  function selectSpreadsheet(spreadsheet: DriveSpreadsheetRecord) {
-    setSelectedSpreadsheetId(spreadsheet.driveFileId);
-    setSelectedWorksheetId(spreadsheet.worksheets[0]?.worksheetId ?? "");
-    setPreview(null);
-    setCommitResult(null);
-    setStep("drive");
-  }
-
-  function selectWorksheet(worksheetId: string) {
-    setSelectedWorksheetId(worksheetId);
-    setPreview(null);
-    setCommitResult(null);
-  }
-
-  function resetToDrive() {
-    setStep("drive");
-    setPreview(null);
-    setCommitResult(null);
-  }
-
-  async function handlePreview() {
-    if (!selectedSpreadsheet || !selectedWorksheet) {
+  useEffect(() => {
+    if (typeof window === "undefined") {
       return;
     }
 
-    setIsPreviewing(true);
     try {
-      const result = await previewImportAction(
-        selectedSpreadsheet.driveFileId,
-        selectedWorksheet.worksheetName,
-      );
-      setPreview(result);
-      setCommitResult(null);
-      setStep("preview");
-    } finally {
-      setIsPreviewing(false);
-    }
-  }
+      const stored = window.sessionStorage.getItem(IMPORT_WIZARD_SESSION_STORAGE_KEY);
+      if (!stored) {
+        return;
+      }
 
-  async function handleCommit() {
-    if (!selectedSpreadsheet || !selectedWorksheet) {
+      const parsed = JSON.parse(stored) as Partial<PersistedImportWizardState>;
+      setScanState(parsed.scanState ?? "idle");
+      setQuery(parsed.query ?? "");
+      setAppliedQuery(parsed.appliedQuery ?? "");
+      setActiveGroup(isValidSourceGroup(parsed.activeGroup) ? parsed.activeGroup : "ALL");
+      setPage(Math.max(1, parsed.page ?? 1));
+      setScanResult(parsed.scanResult ?? null);
+      setStagedSpreadsheets(Array.isArray(parsed.stagedSpreadsheets) ? parsed.stagedSpreadsheets : []);
+      setSelectedSpreadsheetIds(new Set(normalizeStoredIds(parsed.selectedSpreadsheetIds)));
+      setSelectedStagedIds(new Set(normalizeStoredIds(parsed.selectedStagedIds)));
+      setReimportStrategy(parsed.reimportStrategy ?? "UPDATE");
+      setActivity(Array.isArray(parsed.activity) ? parsed.activity : []);
+    } catch {
+      // Ignore stale or malformed session state and fall back to defaults.
+    } finally {
+      setHasHydratedState(true);
+    }
+  }, []);
+
+  const persistedState = useMemo<PersistedImportWizardState>(
+    () => ({
+      scanState,
+      query,
+      appliedQuery,
+      activeGroup,
+      page,
+      scanResult,
+      stagedSpreadsheets,
+      selectedSpreadsheetIds: Array.from(selectedSpreadsheetIds),
+      selectedStagedIds: Array.from(selectedStagedIds),
+      reimportStrategy,
+      activity,
+    }),
+    [
+      scanState,
+      query,
+      appliedQuery,
+      activeGroup,
+      page,
+      scanResult,
+      stagedSpreadsheets,
+      selectedSpreadsheetIds,
+      selectedStagedIds,
+      reimportStrategy,
+      activity,
+    ],
+  );
+
+  useEffect(() => {
+    if (!hasHydratedState || typeof window === "undefined") {
       return;
     }
 
-    setIsImporting(true);
+    window.sessionStorage.setItem(IMPORT_WIZARD_SESSION_STORAGE_KEY, JSON.stringify(persistedState));
+  }, [hasHydratedState, persistedState]);
+
+  useEffect(() => {
+    if (pageCount > 0 && page > pageCount) {
+      setPage(pageCount);
+    }
+  }, [page, pageCount]);
+
+  useEffect(() => {
+    if (activeGroup !== "ALL" && !availableSourceGroups.includes(activeGroup)) {
+      setActiveGroup("ALL");
+    }
+  }, [activeGroup, availableSourceGroups]);
+
+  async function performScan() {
+    setIsScanning(true);
+    setScanState("scanning");
+    setModalError(null);
+    console.info("[TRACE_IMPORT_QUEUE][UI] scan:start", {
+      query: "",
+      sourceGroup: "ALL",
+      page: 1,
+      pageSize: 1000,
+    });
+
     try {
-      const result = await commitImportAction(
-        selectedSpreadsheet.driveFileId,
-        selectedWorksheet.worksheetName,
-      );
-      setCommitResult(result);
-      setStep("commit");
+      const result = await scanDriveImportCatalogAction({
+        query: "",
+        sourceGroup: "ALL",
+        page: 1,
+        pageSize: 1000,
+      });
+
+      setScanResult(result);
+      setSelectedSpreadsheetIds((current) => {
+        const next = new Set<string>();
+        for (const record of result.results.map((entry) => entry.record)) {
+          if (current.has(record.driveFileId)) {
+            next.add(record.driveFileId);
+          }
+        }
+        return next;
+      });
+      setPage(1);
+      setScanState("ready");
+      console.info("[TRACE_IMPORT_QUEUE][UI] scan:done", {
+        total: result.total,
+        resultSpreadsheetIds: result.results.map((entry) => entry.record.driveFileId),
+      });
+      setActivity((current) => [
+        {
+          id: `scan-${Date.now()}`,
+          label: "Drive scan completed",
+          detail: `${result.total} matching spreadsheet${result.total === 1 ? "" : "s"} found in ${DRIVE_IMPORT_FOLDER_NAME}.`,
+          occurredAt: new Date().toISOString(),
+        },
+        ...current,
+      ]);
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : "Unable to scan Drive right now.");
     } finally {
-      setIsImporting(false);
+      setIsScanning(false);
     }
   }
+
+  function toggleSpreadsheetSelection(record: DriveSpreadsheetRecord) {
+    setSelectedSpreadsheetIds((current) => {
+      const next = new Set(current);
+      if (next.has(record.driveFileId)) {
+        next.delete(record.driveFileId);
+      } else {
+        next.add(record.driveFileId);
+      }
+      return next;
+    });
+  }
+
+  function toggleStagedSelection(batchId: string) {
+    setSelectedStagedIds((current) => {
+      const next = new Set(current);
+      if (next.has(batchId)) {
+        next.delete(batchId);
+      } else {
+        next.add(batchId);
+      }
+      return next;
+    });
+  }
+
+  function selectCurrentPage() {
+    if (visibleScanRecords.length === 0) {
+      return;
+    }
+
+    setSelectedSpreadsheetIds((current) => {
+      const next = new Set(current);
+      for (const record of visibleScanRecords) {
+        next.add(record.driveFileId);
+      }
+      return next;
+    });
+  }
+
+  async function confirmStageSelected() {
+    const driveFileIds = Array.from(selectedSpreadsheetIds);
+    if (driveFileIds.length === 0) {
+      setModalOpen(false);
+      return;
+    }
+
+    setIsStaging(true);
+    setModalError(null);
+    console.info("[TRACE_IMPORT_QUEUE][UI] stage:start", {
+      driveFileIds,
+      reimportStrategy,
+    });
+
+    try {
+      const result = await stageDriveImportSpreadsheetsAction({
+        driveFileIds,
+        reimportStrategy,
+      });
+
+      console.info("[TRACE_IMPORT_QUEUE][UI] stage:done", {
+        driveFileIds,
+        batchIdsCreated: result.spreadsheets.map((spreadsheet) => spreadsheet.id),
+        stagedSpreadsheetIds: result.spreadsheets.map((spreadsheet) => spreadsheet.spreadsheetId),
+        rowsDetected: result.spreadsheets.map((spreadsheet) => ({
+          batchId: spreadsheet.id,
+          spreadsheetId: spreadsheet.spreadsheetId,
+          totalRowsDetected: spreadsheet.totalRowsDetected,
+          qualifiedRowsDetected: spreadsheet.qualifiedRowsDetected,
+          conflictRowsDetected: spreadsheet.conflictRowsDetected,
+        })),
+      });
+      setStagedSpreadsheets((current) => uniqueByDriveFileId([...current, ...result.spreadsheets]));
+      setSelectedSpreadsheetIds(new Set());
+      setModalOpen(false);
+      setScanState("ready");
+      setActivity((current) => [
+        {
+          id: `stage-${Date.now()}`,
+          label: "Spreadsheets staged",
+          detail: `${result.spreadsheets.length} spreadsheet${result.spreadsheets.length === 1 ? "" : "s"} imported to staging.`,
+          occurredAt: new Date().toISOString(),
+        },
+        ...current,
+      ]);
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : "Unable to stage the selected spreadsheets.");
+    } finally {
+      setIsStaging(false);
+    }
+  }
+
+  async function sendSelectedToWorkflowQueue() {
+    if (selectedStagedIds.size === 0) {
+      return;
+    }
+
+    setIsSending(true);
+    setModalError(null);
+
+    try {
+      const sendableIds = Array.from(selectedStagedIds).filter((batchId) => {
+        const record = stagedSpreadsheets.find((item) => item.id === batchId);
+        return record ? record.state !== "SENT_TO_QUEUE" : false;
+      });
+      console.info("[TRACE_IMPORT_QUEUE][UI] queue-send:start", {
+        selectedBatchIds: Array.from(selectedStagedIds),
+        sendableBatchIds: sendableIds,
+      });
+
+      if (sendableIds.length === 0) {
+        setIsSending(false);
+        setSelectedStagedIds(new Set());
+        console.info("[TRACE_IMPORT_QUEUE][UI] queue-send:skipped", {
+          reason: "already_queued",
+          selectedBatchIds: Array.from(selectedStagedIds),
+        });
+        setActivity((current) => [
+          {
+            id: `queue-${Date.now()}`,
+            label: "Workflow Queue updated",
+            detail: "Selected spreadsheets were already queued.",
+            occurredAt: new Date().toISOString(),
+          },
+          ...current,
+        ]);
+        return;
+      }
+
+      const results = await Promise.all(
+        sendableIds.map(async (batchId) => {
+          const result = await sendStagedSpreadsheetToWorkflowQueueAction(batchId);
+          return result;
+        }),
+      );
+      console.info("[TRACE_IMPORT_QUEUE][UI] queue-send:done", {
+        sendableBatchIds: sendableIds,
+        results: results.map((result) =>
+          result
+            ? {
+                spreadsheetImportId: result.spreadsheetImportId,
+                spreadsheetId: result.spreadsheetId,
+                sentRows: result.sentRows,
+                createdRows: result.createdRows,
+                updatedRows: result.updatedRows,
+                replacedRows: result.replacedRows,
+                keptRows: result.keptRows,
+                skippedRows: result.skippedRows,
+                rejectedRows: result.rejectedRows,
+                conflicts: result.conflicts,
+              }
+            : null,
+        ),
+      });
+
+      setStagedSpreadsheets((current) =>
+        current.map((record) => {
+          const result = results.find((entry) => entry?.spreadsheetImportId === record.id);
+          if (!result) {
+            return record;
+          }
+
+          return {
+            ...record,
+            state: result.state,
+            queuedAt: new Date().toISOString(),
+            importedRowCount: result.createdRows + result.updatedRows + result.replacedRows + result.keptRows,
+            updatedRowCount: result.updatedRows,
+            replacedRowCount: result.replacedRows,
+            keptRowCount: result.keptRows,
+            conflictRowsDetected: result.conflicts,
+          };
+        }),
+      );
+
+      setSelectedStagedIds(new Set());
+      setActivity((current) => [
+        {
+          id: `queue-${Date.now()}`,
+          label: "Workflow Queue updated",
+          detail: `${results.filter(Boolean).length} spreadsheet${results.filter(Boolean).length === 1 ? "" : "s"} moved into the queue.`,
+          occurredAt: new Date().toISOString(),
+        },
+        ...current,
+      ]);
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : "Unable to send staged spreadsheets to the queue.");
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  const foundCount = scanResult?.total ?? 0;
+  const stagedCount = stagedSpreadsheets.length;
+  const detectedRows = sumBy(stagedSpreadsheets, (item) => item.totalRowsDetected);
+  const queuedRows = sumBy(stagedSpreadsheets, (item) => item.importedRowCount + item.updatedRowCount + item.replacedRowCount + item.keptRowCount);
+  const conflictCount = sumBy(stagedSpreadsheets, (item) => item.conflictRowsDetected);
+  const alreadyPublishedCount = sumBy(stagedSpreadsheets, (item) => item.alreadyPublishedRowCount);
 
   return (
-    <div className="space-y-4">
-      {step !== "drive" ? (
-        <div className="flex items-center gap-1.5 text-xs text-slate-400">
-          <button
-            type="button"
-            onClick={
-              step === "worksheet" ? resetToDrive : step === "preview" ? () => setStep("worksheet") : () => setStep("worksheet")
-            }
-            className="flex items-center gap-1 hover:text-slate-700"
-          >
-            <ArrowLeft className="h-3 w-3" />
-            Back
-          </button>
-          <span>·</span>
-          <span>
-            {step === "worksheet" ? "Spreadsheet" : step === "preview" ? "Preview" : "Result"}
-          </span>
+    <>
+      <div className="space-y-5">
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-3xl space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className="rounded-full bg-slate-950 px-3 py-1 text-white hover:bg-slate-950">
+                  Drive-first import
+                </Badge>
+                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-[11px] text-slate-600">
+                  {DRIVE_IMPORT_FOLDER_NAME}
+                </Badge>
+                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-[11px] text-slate-600">
+                  {DRIVE_IMPORT_KEYWORD}
+                </Badge>
+              </div>
+
+              <div>
+                <h1 className="text-3xl font-semibold tracking-tight text-slate-950">
+                  Scan Drive, stage spreadsheets, then move valid rows into the Workflow Queue.
+                </h1>
+                <p className="mt-2 max-w-3xl text-base leading-7 text-slate-600">
+                  The editorial copy stays read-only in Google Sheets. This surface discovers spreadsheet records,
+                  stages them in the platform, and sends valid rows into operational queue items.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  onClick={() => {
+                    setScanState("armed");
+                    void performScan();
+                  }}
+                  disabled={isScanning}
+                  className="transition-default disabled:opacity-50"
+                  style={{ backgroundColor: "#E8584A", color: "white" }}
+                >
+                  {isScanning ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      Scanning Drive...
+                    </>
+                  ) : (
+                    "Scan Drive for spreadsheets"
+                  )}
+                </Button>
+                <Button variant="outline" asChild className="border-slate-300 text-slate-700 hover:bg-slate-50">
+                  <Link href="/queue">Open Workflow Queue</Link>
+                </Button>
+                <span className="text-sm text-slate-500">
+                  {scanState === "idle"
+                    ? "Click scan to arm import mode."
+                    : scanState === "armed"
+                      ? "Drive scan armed and ready."
+                      : "Staged spreadsheets are retained until queue send."}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:w-[30rem]">
+              <SummaryCard
+                label="Spreadsheets found"
+                value={String(foundCount)}
+                detail={scanState === "ready" ? "Matched by pipeline guidance" : "Waiting for Drive scan"}
+              />
+              <SummaryCard
+                label="Spreadsheets staged"
+                value={String(stagedCount)}
+                detail="Imported records already resident in the app"
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <SummaryCard label="Rows detected" value={String(detectedRows)} detail="Auto-picked worksheets and row discovery" />
+          <SummaryCard label="Rows queued" value={String(queuedRows)} detail="Valid rows already sent downstream" />
+          <SummaryCard label="Conflicts detected" value={String(conflictCount)} detail="Duplicate and reimport suggestions surfaced" />
+          <SummaryCard label="Already published" value={String(alreadyPublishedCount)} detail="Rows imported as concluded work" />
+        </section>
+
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          <SectionHeading>Drive scan results</SectionHeading>
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex-1">
+              <label className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Search</label>
+              <div className="mt-1 flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        setAppliedQuery(event.currentTarget.value);
+                        setPage(1);
+                      }
+                    }}
+                    placeholder="Search by spreadsheet name, owner, region, tags, or file path"
+                    className="h-11 border-slate-200 pl-9"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setAppliedQuery(query);
+                    setPage(1);
+                  }}
+                  className="border-slate-300 text-slate-700 hover:bg-slate-50"
+                >
+                  Scan
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {availableSourceGroups.map((group) => {
+                const isActive = activeGroup === group;
+                return (
+                  <button
+                    key={group}
+                    type="button"
+                    onClick={() => {
+                      setActiveGroup(group);
+                      setPage(1);
+                    }}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-xs font-medium transition-default",
+                      isActive
+                        ? "border-slate-950 bg-slate-950 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50",
+                    )}
+                  >
+                    {formatSourceGroupLabel(group)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+            <p>{buildSelectionLabel(selectedSpreadsheetIds.size, "spreadsheet")}</p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={selectCurrentPage}
+                disabled={!scanResult || scanResult.results.length === 0}
+                className="border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                Select page
+              </Button>
+              <Button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                disabled={selectedSpreadsheetIds.size === 0}
+                className="transition-default disabled:opacity-50"
+                style={{ backgroundColor: "#E8584A", color: "white" }}
+              >
+                Import selected
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 max-h-[34rem] min-h-0 space-y-3 overflow-y-auto overflow-x-hidden pr-1">
+            {visibleScanRecords.length ? (
+              visibleScanRecords.map((record) => (
+                <SpreadsheetResultRow
+                  key={record.driveFileId}
+                  record={record}
+                  selected={selectedSpreadsheetIds.has(record.driveFileId)}
+                  onToggle={() => toggleSpreadsheetSelection(record)}
+                />
+              ))
+            ) : scanState === "ready" ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
+                <p className="text-sm font-medium text-slate-900">No spreadsheets found</p>
+                <p className="mt-2 text-sm text-slate-500">
+                  Try another search term or a different source filter.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
+                <p className="text-sm font-medium text-slate-900">Drive scan is not active yet</p>
+                <p className="mt-2 text-sm text-slate-500">
+                  Click <span className="font-medium text-slate-900">Scan Drive for spreadsheets</span> to discover
+                  matching files inside the configured folder.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {pageCount > 1 ? (
+            <div className="mt-4 flex items-center justify-between">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setPage((current) => Math.max(1, current - 1));
+                }}
+                disabled={page <= 1 || isScanning}
+                className="border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                <ChevronLeft className="mr-1.5 h-4 w-4" />
+                Previous
+              </Button>
+              <p className="text-sm text-slate-500">
+                Page {page} of {pageCount}
+              </p>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setPage((current) => Math.min(pageCount, current + 1));
+                }}
+                disabled={page >= pageCount || isScanning}
+                className="border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                Next
+                <ChevronRight className="ml-1.5 h-4 w-4" />
+              </Button>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          <SectionHeading>Imported / staged spreadsheets</SectionHeading>
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <p className="max-w-3xl text-sm text-slate-500">
+              Imported spreadsheets are staged here first. Review the summaries, then send the selected items into the
+              Workflow Queue when you are ready.
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                onClick={() => void sendSelectedToWorkflowQueue()}
+                disabled={selectedStagedIds.size === 0 || isSending}
+                className="transition-default disabled:opacity-50"
+                style={{ backgroundColor: "#E8584A", color: "white" }}
+              >
+                {isSending ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  "Send selected to Workflow Queue"
+                )}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+            <p>{buildSelectionLabel(selectedStagedIds.size, "staged spreadsheet")}</p>
+            <p>
+              {stagedCount === 0
+                ? "Nothing staged yet"
+                : `${stagedCount} staged spreadsheet${stagedCount === 1 ? "" : "s"} available`}
+            </p>
+          </div>
+
+          <div className="mt-4 max-h-[30rem] min-h-0 space-y-3 overflow-y-auto overflow-x-hidden pr-1">
+            {stagedSpreadsheets.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
+                <p className="text-sm font-medium text-slate-900">No spreadsheets staged yet</p>
+                <p className="mt-2 text-sm text-slate-500">
+                  Stage one or more selected spreadsheets to make them available for queue ingestion.
+                </p>
+              </div>
+            ) : (
+              stagedSpreadsheets.map((record) => (
+                <StagedSpreadsheetRow
+                  key={record.id}
+                  record={record}
+                  selected={selectedStagedIds.has(record.id)}
+                  onToggle={() => toggleStagedSelection(record.id)}
+                />
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm">
+          <SectionHeading>Activity</SectionHeading>
+          {activity.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">
+              Drive scans, staging, and queue sends will appear here.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {activity.slice(0, 5).map((entry) => (
+                <div key={entry.id} className="flex items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3">
+                  <Clock3 className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-900">{entry.label}</p>
+                    <p className="mt-1 text-sm text-slate-500">{entry.detail}</p>
+                    <p className="mt-1 text-[11px] text-slate-400">{formatDateTime(entry.occurredAt)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <ConfirmModal
+        open={modalOpen}
+        selectedRecords={selectedScanRecords}
+        reimportStrategy={reimportStrategy}
+        onStrategyChange={setReimportStrategy}
+        onCancel={() => {
+          setModalOpen(false);
+          setModalError(null);
+        }}
+        onConfirm={() => void confirmStageSelected()}
+        confirming={isStaging}
+      />
+
+      {modalError ? (
+        <div className="fixed bottom-4 right-4 z-50 max-w-md rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 shadow-lg">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <p>{modalError}</p>
+          </div>
         </div>
       ) : null}
-
-      {step === "drive" ? (
-        <DirectoryStep
-          spreadsheets={spreadsheets}
-          selectedSpreadsheet={selectedSpreadsheet}
-          selectedSpreadsheetId={selectedSpreadsheetId}
-          onSelectSpreadsheet={selectSpreadsheet}
-          onContinue={() => setStep("worksheet")}
-        />
-      ) : null}
-
-      {step === "worksheet" && selectedSpreadsheet && selectedWorksheet ? (
-        <WorksheetStep
-          spreadsheet={selectedSpreadsheet}
-          selectedWorksheetId={selectedWorksheetId}
-          onSelectWorksheet={selectWorksheet}
-          onBack={resetToDrive}
-          onPreview={handlePreview}
-          isLoading={isPreviewing}
-        />
-      ) : null}
-
-      {step === "preview" && preview ? (
-        <PreviewStep
-          preview={preview}
-          onCommit={handleCommit}
-          onBack={() => setStep("worksheet")}
-          isLoading={isImporting}
-        />
-      ) : null}
-
-      {step === "commit" && commitResult ? (
-        <CommitResultStep
-          result={commitResult}
-          onImportMore={() => {
-            resetToDrive();
-            setSelectedSpreadsheetId(allSpreadsheets[0]?.driveFileId ?? "");
-            setSelectedWorksheetId(allSpreadsheets[0]?.worksheets[0]?.worksheetId ?? "");
-          }}
-        />
-      ) : null}
-    </div>
+    </>
   );
 }

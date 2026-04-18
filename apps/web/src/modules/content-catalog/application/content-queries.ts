@@ -1,10 +1,12 @@
 import { DesignProvider, Prisma } from "@prisma/client";
 import { notFound } from "next/navigation";
 import { getPrisma } from "@/shared/lib/prisma";
+import { logEvent } from "@/shared/logging/logger";
 
 const queueContentItemArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()({
   include: {
     sourceLinks: {
+      orderBy: { createdAt: "desc" },
       take: 1,
     },
     designRequests: {
@@ -31,7 +33,9 @@ const queueContentItemArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()({
 
 const contentItemDetailArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()({
   include: {
-    sourceLinks: true,
+    sourceLinks: {
+      orderBy: { createdAt: "desc" },
+    },
     importReceipts: {
       include: {
         importedBy: true,
@@ -91,7 +95,17 @@ export async function listQueueContentItems(): Promise<QueueContentItem[]> {
   const items = await prisma.contentItem.findMany({
     ...queueContentItemArgs,
     orderBy: [{ latestImportAt: "desc" }, { updatedAt: "desc" }],
-    take: 30,
+  });
+
+  logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_QUERY] raw-items", {
+    count: items.length,
+    itemIds: items.map((item) => item.id),
+    canonicalKeys: items.map((item) => item.canonicalKey),
+    latestImportAt: items.map((item) => ({
+      id: item.id,
+      latestImportAt: item.latestImportAt?.toISOString() ?? null,
+      updatedAt: item.updatedAt.toISOString(),
+    })),
   });
 
   if (items.length === 0) {
@@ -144,7 +158,7 @@ export async function listQueueContentItems(): Promise<QueueContentItem[]> {
     }
   }
 
-  return items.map((item) => {
+  const queueItems = items.map((item) => {
     const mapping = mappingByKey.get(
       `${item.profile}:${item.contentType}:${item.sourceLocale.toLowerCase()}`,
     );
@@ -156,6 +170,14 @@ export async function listQueueContentItems(): Promise<QueueContentItem[]> {
       queueActiveRouteProvider: mapping?.provider ?? null,
     };
   });
+
+  logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_QUERY] returned-items", {
+    count: queueItems.length,
+    itemIds: queueItems.map((item) => item.id),
+    canonicalKeys: queueItems.map((item) => item.canonicalKey),
+  });
+
+  return queueItems;
 }
 
 export async function getContentItemDetail(contentItemId: string): Promise<ContentItemDetail> {

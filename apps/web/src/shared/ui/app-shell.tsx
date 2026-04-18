@@ -100,7 +100,7 @@ export function AppShell({
           <header className="border-b border-slate-200/80 bg-white/80 px-4 py-2.5 backdrop-blur md:px-5 lg:px-6">
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs" style={{ color: "#94A3B8" }}>
-                Google Drive → Spreadsheet → Worksheet → Platform
+                Google Drive → Staging → Workflow Queue
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge

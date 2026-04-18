@@ -402,6 +402,19 @@ async function main() {
       OR: [
         { canonicalKey: { startsWith: "yann-" } },
         { canonicalKey: { startsWith: "yuri-" } },
+        { canonicalKey: "zazmic-brazil-2026-04-08-browser-gap" },
+        { canonicalKey: "SHAWN-static-canva-slice-1" },
+        { canonicalKey: "SHAWN-design-progress" },
+        { canonicalKey: "SHAWN-design-failed" },
+        { canonicalKey: "SOPHIAN_YACINE-revision-blocked" },
+        { canonicalKey: "SHAWN-design-ready" },
+        { canonicalKey: "SHAWN-imported-intake" },
+        { canonicalKey: "zazmic-jobs-route-missing" },
+        { canonicalKey: "SHAWN-translation-pending" },
+        { canonicalKey: "SOPHIAN_YACINE-ready-to-publish" },
+        { canonicalKey: "SHAWN-manual-published" },
+        { canonicalKey: "yann-demo-static-post" },
+        { canonicalKey: "yuri-demo-static-post" },
       ],
     },
   });
@@ -499,6 +512,7 @@ async function main() {
     });
   }
 
+  if (process.env.SEED_DEMO_CONTENT === "true") {
   const shawnTemplate = await prisma.profileTemplateMapping.findFirst({
     where: {
       profile: ContentProfile.SHAWN,
@@ -1819,6 +1833,7 @@ async function main() {
     createdAt: new Date("2026-04-06T15:35:00.000Z"),
     updatedAt: new Date("2026-04-06T15:50:00.000Z"),
   });
+  }
 }
 
 main()

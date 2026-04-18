@@ -1,6 +1,6 @@
 "use server";
 
-import { ApprovalDecision, ApprovalStage, NoteType } from "@prisma/client";
+import { ApprovalDecision, ApprovalStage, ContentStatus, NoteType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/modules/auth/application/auth-service";
 import { getPrisma } from "@/shared/lib/prisma";
@@ -94,6 +94,7 @@ export async function recordApprovalActionWithDecision(
   const nextStatus = resolveApprovalTransition({
     stage,
     decision,
+    currentStatus: contentItem.currentStatus,
   });
 
   assertContentStatusTransition({
@@ -129,6 +130,52 @@ export async function recordApprovalActionWithDecision(
         note:
           note ||
           `${stage === ApprovalStage.PUBLISH ? "Publish" : "Translation"} ${decision.toLowerCase().replace("_", " ")}.`,
+      },
+    });
+  });
+
+  revalidatePath(`/queue/${contentItemId}`);
+  revalidatePath("/queue");
+}
+
+export async function recordPostedAction(formData: FormData) {
+  await requireSession();
+  const prisma = getPrisma();
+  const contentItemId = String(formData.get("contentItemId") ?? "");
+
+  if (!contentItemId) return;
+
+  const contentItem = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    select: { currentStatus: true },
+  });
+
+  if (!contentItem) return;
+
+  const isFromNewFlow = contentItem.currentStatus === ContentStatus.READY_TO_POST;
+  const isFromLegacy = contentItem.currentStatus === ContentStatus.READY_TO_PUBLISH;
+  if (!isFromNewFlow && !isFromLegacy) return;
+
+  const nextStatus = isFromNewFlow ? ContentStatus.POSTED : ContentStatus.PUBLISHED_MANUALLY;
+
+  assertContentStatusTransition({
+    currentStatus: contentItem.currentStatus,
+    nextStatus,
+    reason: "manual post on LinkedIn",
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.contentItem.update({
+      where: { id: contentItemId },
+      data: { currentStatus: nextStatus },
+    });
+    await tx.statusEvent.create({
+      data: {
+        contentItemId,
+        fromStatus: contentItem.currentStatus,
+        toStatus: nextStatus,
+        actorEmail: "system",
+        note: "Manually recorded as posted on LinkedIn.",
       },
     });
   });

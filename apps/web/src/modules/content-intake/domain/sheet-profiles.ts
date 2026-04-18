@@ -63,6 +63,7 @@ export const sheetProfileSchema = z.object({
   }),
   dataRowRules: z.object({
     minimumMappedFields: z.array(canonicalPlanningFieldSchema).min(1),
+    qualifyingAnyOfMappedFields: z.array(canonicalPlanningFieldSchema).default([]),
     skipRowWhenAnyCellMatches: z.array(z.string()).default([]),
   }),
   titleDerivation: z.object({
@@ -134,6 +135,74 @@ function extractMonthTokens(value: string) {
   };
 }
 
+function normalizeCellText(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function looksLikeDateCell(value: string) {
+  const normalized = normalizeCellText(value);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(normalized) ||
+    /^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/.test(normalized) ||
+    /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|fev|abr|mai|ago|set|out|dez)\b/i.test(
+      normalized,
+    )
+  );
+}
+
+function looksLikeUrlCell(value: string) {
+  return /https?:\/\/|www\./i.test(value);
+}
+
+function looksLikePublicationMarker(value: string) {
+  return /\b(?:yes|published|publish(ed)?|done|complete|completed|live)\b/i.test(value);
+}
+
+function looksLikeCopyCell(value: string) {
+  const normalized = normalizeCellText(value);
+  return normalized.length >= 40 && /[.!?]/.test(normalized);
+}
+
+function looksLikeTitleCell(value: string) {
+  const normalized = normalizeCellText(value);
+  return normalized.length >= 12 && normalized.length <= 120 && /[A-Za-z]/.test(normalized);
+}
+
+function scoreCellSignals(
+  rowValues: string[],
+  mappedPlanningFields: Partial<Record<z.infer<typeof canonicalPlanningFieldSchema>, string | undefined>>,
+) {
+  const normalizedRowValues = rowValues.map(normalizeCellText);
+  const hasDate = Boolean(mappedPlanningFields.plannedDate) || normalizedRowValues.some(looksLikeDateCell);
+  const hasPlatform =
+    Boolean(mappedPlanningFields.platformLabel) ||
+    normalizedRowValues.some((value) => /\b(linkedin|instagram|substack|x|threads)\b/i.test(value));
+  const hasTitle =
+    Boolean(mappedPlanningFields.campaignLabel) ||
+    normalizedRowValues.some(looksLikeTitleCell);
+  const hasCopy = Boolean(mappedPlanningFields.copyEnglish) || normalizedRowValues.some(looksLikeCopyCell);
+  const hasLink =
+    Boolean(mappedPlanningFields.sourceAssetLink) ||
+    normalizedRowValues.some(looksLikeUrlCell);
+  const hasPublicationMarker =
+    Boolean(mappedPlanningFields.publishedFlag) ||
+    Boolean(mappedPlanningFields.publishedPostUrl) ||
+    normalizedRowValues.some(looksLikePublicationMarker);
+
+  return {
+    hasDate,
+    hasTitle,
+    hasCopy,
+    hasPlatform,
+    hasLink,
+    hasPublicationMarker,
+  };
+}
+
 export function findMappedFieldHeaders(headers: string[], profile: SheetProfile) {
   const normalizedHeaders = headers.map((header) => ({
     raw: header,
@@ -143,7 +212,15 @@ export function findMappedFieldHeaders(headers: string[], profile: SheetProfile)
   const mappedFields = profile.fieldMappings.reduce<Record<string, { header: string; columnIndex: number }>>(
     (accumulator, mapping) => {
       const aliasSet = new Set(mapping.headerAliases.map(normalizeHeader));
-      const match = normalizedHeaders.find((header) => aliasSet.has(header.normalized));
+      const match = normalizedHeaders.find((header) =>
+        header.normalized.length > 0 &&
+        Array.from(aliasSet).some(
+          (alias) =>
+            header.normalized === alias ||
+            header.normalized.includes(alias) ||
+            (header.normalized.length > 2 && alias.includes(header.normalized)),
+        ),
+      );
 
       if (match) {
         accumulator[mapping.field] = {
@@ -177,7 +254,17 @@ export function qualifySheetRow(
   if (normalizedRowValues.every((value) => value.length === 0)) {
     return {
       disposition: "SKIPPED_NON_DATA" as const,
+      confidence: "LOW" as const,
       reasons: ["Row is empty."],
+      signals: {
+        hasDate: false,
+        hasTitle: false,
+        hasCopy: false,
+        hasPlatform: false,
+        hasLink: false,
+        hasPublicationMarker: false,
+      },
+      isPublishedRow: false,
     };
   }
 
@@ -188,25 +275,59 @@ export function qualifySheetRow(
   if (matchedSkipPattern) {
     return {
       disposition: "SKIPPED_NON_DATA" as const,
+      confidence: "LOW" as const,
       reasons: [`Row matched non-data pattern: ${matchedSkipPattern}`],
+      signals: {
+        hasDate: false,
+        hasTitle: false,
+        hasCopy: false,
+        hasPlatform: false,
+        hasLink: false,
+        hasPublicationMarker: false,
+      },
+      isPublishedRow: false,
     };
   }
 
+  const signals = scoreCellSignals(rowValues, mappedPlanningFields);
+  const signalScore = Object.values(signals).filter(Boolean).length;
+  const qualifyingFieldValues = profile.dataRowRules.qualifyingAnyOfMappedFields.filter((field) => {
+    const value = mappedPlanningFields[field];
+    return Boolean(value && value.trim().length > 0);
+  });
   const missingRequiredFields = profile.dataRowRules.minimumMappedFields.filter((field) => {
     const value = mappedPlanningFields[field];
     return !value || value.trim().length === 0;
   });
 
-  if (missingRequiredFields.length > 0) {
+  const isPublishedRow = signals.hasPublicationMarker;
+  const hasOperationalSignal =
+    qualifyingFieldValues.length > 0 ||
+    signals.hasDate ||
+    signals.hasTitle ||
+    signals.hasPublicationMarker ||
+    Boolean(missingRequiredFields.length === 0 && signalScore >= 2);
+
+  if (!hasOperationalSignal) {
     return {
       disposition: "REJECTED_INVALID" as const,
-      reasons: [`Missing required planning fields: ${missingRequiredFields.join(", ")}`],
+      confidence: "LOW" as const,
+      reasons: [
+        missingRequiredFields.length > 0
+          ? `Missing required planning fields: ${missingRequiredFields.join(", ")}`
+          : "Row does not contain a qualifying operational signal.",
+      ],
+      signals,
+      isPublishedRow,
     };
   }
 
   return {
     disposition: "QUALIFIED" as const,
-    reasons: [],
+    confidence: signalScore >= 5 ? ("HIGH" as const) : signalScore >= 3 ? ("MEDIUM" as const) : ("LOW" as const),
+    reasons: isPublishedRow ? ["Row is already marked as published in the source sheet."] : [],
+    signals,
+    isPublishedRow,
   };
 }
 
@@ -247,6 +368,28 @@ export function deriveTitleFromPlanningFields(
         sourceField: heuristicCandidate === planningFields.copyEnglish ? "copyEnglish" : "copyPortuguese",
       };
     }
+
+    if (planningFields.plannedDate && planningFields.plannedDate.trim().length > 0) {
+      return {
+        title: `Planned item - ${planningFields.plannedDate.trim()}`,
+        strategy: "HEURISTIC_LAST_RESORT" as const,
+        sourceField: "plannedDate",
+      };
+    }
+
+    if (planningFields.contentDeadline && planningFields.contentDeadline.trim().length > 0) {
+      return {
+        title: `Deadline item - ${planningFields.contentDeadline.trim()}`,
+        strategy: "HEURISTIC_LAST_RESORT" as const,
+        sourceField: "contentDeadline",
+      };
+    }
+
+    return {
+      title: "Published item",
+      strategy: "HEURISTIC_LAST_RESORT" as const,
+      sourceField: "campaignLabel",
+    };
   }
 
   return null;
@@ -344,6 +487,7 @@ export const zazmicBrazilPlanningProfile = sheetProfileSchema.parse({
   },
   dataRowRules: {
     minimumMappedFields: ["plannedDate", "copyEnglish"],
+    qualifyingAnyOfMappedFields: ["plannedDate", "campaignLabel", "contentDeadline", "publishedFlag", "publishedPostUrl"],
     skipRowWhenAnyCellMatches: ["week 1", "week 2", "week 3", "week 4", "hashtags", "qr code"],
   },
   titleDerivation: {
@@ -384,6 +528,7 @@ export const yannKronbergPlanningProfile = sheetProfileSchema.parse({
   },
   dataRowRules: {
     minimumMappedFields: ["plannedDate", "copyEnglish"],
+    qualifyingAnyOfMappedFields: ["plannedDate", "campaignLabel", "contentDeadline", "publishedFlag", "publishedPostUrl"],
     skipRowWhenAnyCellMatches: ["week 1", "week 2", "week 3", "week 4", "week 5"],
   },
   titleDerivation: {
@@ -402,4 +547,76 @@ export const yannKronbergPlanningProfile = sheetProfileSchema.parse({
     { field: "publishedPostUrl", headerAliases: ["Link to the comments"] },
   ],
   pushbackCandidates: [],
+});
+
+export const driveSmmPlanImportProfile = sheetProfileSchema.parse({
+  key: "drive-smm-plan-import",
+  version: 1,
+  spreadsheetId: "google-drive-smm-plan",
+  spreadsheetName: "SMM Plan import",
+  worksheetSelection: {
+    allowedStrategies: ["MONTHLY_TAB_PATTERN", "EXACT_WORKSHEET_NAME"],
+    exactWorksheetNames: [],
+    monthlyWorksheetPattern:
+      "(jan|fev|feb|mar|abr|apr|mai|may|jun|jul|ago|aug|set|sep|out|oct|nov|dez|dec).*(20\\d{2})",
+    monthlyWorksheetExamples: ["Apr 2026", "Ago 2026", "LinkedIn + Substack (April 2026)"],
+  },
+  headerDiscovery: {
+    headerRowCandidates: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    requiredHeaderAliases: ["Date", "LinkedIn", "LinkedIn Copy"],
+  },
+  dataRowRules: {
+    minimumMappedFields: ["plannedDate", "copyEnglish"],
+    qualifyingAnyOfMappedFields: ["plannedDate", "campaignLabel", "contentDeadline", "publishedFlag", "publishedPostUrl"],
+    skipRowWhenAnyCellMatches: [
+      "week 1",
+      "week 2",
+      "week 3",
+      "week 4",
+      "week 5",
+      "hashtags",
+      "links",
+      "link block",
+      "helper",
+      "notes",
+      "qr code",
+    ],
+  },
+  titleDerivation: {
+    explicitMappedField: "campaignLabel",
+    fallbackField: "copyEnglish",
+    allowHeuristicFallback: true,
+  },
+  fieldMappings: [
+    { field: "plannedDate", headerAliases: ["Date", "Planned date"], required: true },
+    { field: "platformLabel", headerAliases: ["Platform", "Channel", "Account", "Person"] },
+    { field: "campaignLabel", headerAliases: ["Campaign", "Title", "Post title", "Topic", "Idea", "Theme"] },
+    {
+      field: "copyEnglish",
+      headerAliases: [
+        "Linkedin",
+        "LinkedIn",
+        "LinkedIn Copy",
+        "LinkedIn - up to 3000 characters",
+        "Copy",
+        "Copy (EN)",
+        "English copy",
+      ],
+      required: true,
+    },
+    {
+      field: "copyPortuguese",
+      headerAliases: ["Portuguese version", "Portuguese", "PT version", "PT-BR", "Portuguese copy"],
+    },
+    {
+      field: "sourceAssetLink",
+      headerAliases: ["Link IMG", "Image link", "Link image", "Link to the doc", "Substack", "Asset link"],
+    },
+    { field: "contentDeadline", headerAliases: ["Content Deadline", "Deadline", "Due date"] },
+    { field: "publishedFlag", headerAliases: ["Published", "Status", "Posted"] },
+    { field: "publishedPostUrl", headerAliases: ["Link to the post", "Link to the comments", "Post link"] },
+    { field: "outreachAccount", headerAliases: ["LI account for outreach", "Outreach account"] },
+    { field: "outreachCopy", headerAliases: ["Li outreach copy", "Outreach copy"] },
+  ],
+  pushbackCandidates: ["appItemUrl", "workflowStatus", "designAssetUrl", "publishedAt", "publishedPostUrl"],
 });

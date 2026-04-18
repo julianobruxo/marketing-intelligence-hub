@@ -1,13 +1,31 @@
 import { NextResponse } from "next/server";
 import { SignJWT, decodeJwt } from "jose";
 import { getPrisma } from "@/shared/lib/prisma";
+import { persistGoogleConnectionForUser } from "@/modules/auth/application/google-connection-service";
+
+type GoogleTokenResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  scope?: string;
+  expires_in?: number;
+  token_type?: string;
+  id_token?: string;
+};
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
   const error = searchParams.get("error");
+  console.info("[auth/google/callback] callback reached", {
+    hasCode: Boolean(code),
+    errorPresent: Boolean(error),
+  });
   
   if (error) {
+    console.warn("[auth/google/callback] callback rejected before token exchange", {
+      reason: error,
+      sessionCreated: false,
+    });
     return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error)}`, request.url));
   }
 
@@ -37,7 +55,7 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL(`/login?error=Token_exchange_failed`, request.url));
   }
 
-  const tokens = await tokenResponse.json();
+  const tokens = (await tokenResponse.json()) as GoogleTokenResponse;
   const idToken = tokens.id_token;
 
   if (!idToken) {
@@ -49,14 +67,35 @@ export async function GET(request: Request) {
   // but verifying the signature against Google certs is best practice in prod)
   const decoded = decodeJwt(idToken);
   const email = decoded.email as string | undefined;
+  const googleSub = decoded.sub as string | undefined;
 
-  if (!email) {
+  console.info("[auth/google/callback] google identity resolved", {
+    email,
+    hasSub: Boolean(googleSub),
+  });
+
+  if (!email || !googleSub) {
+    console.warn("[auth/google/callback] callback rejected because identity payload was incomplete", {
+      sessionCreated: false,
+    });
     return NextResponse.redirect(new URL(`/login?error=No_email_provided`, request.url));
   }
 
   // 3. Domain Restriction
   if (!email.endsWith("@zazmic.com")) {
-    return NextResponse.redirect(new URL(`/login?error=Access+restricted+to+Zazmic+organization`, request.url));
+    console.warn("[auth/google/callback] google identity rejected for domain", {
+      email,
+      domainAccepted: false,
+      sessionCreated: false,
+    });
+    return NextResponse.redirect(
+      new URL(
+        `/login?error=${encodeURIComponent(
+          "Google sign-in succeeded, but this app only allows @zazmic.com accounts. Please sign in with your Zazmic Google account.",
+        )}`,
+        request.url,
+      ),
+    );
   }
 
   // 4. Provision Check
@@ -64,8 +103,28 @@ export async function GET(request: Request) {
   const user = await prisma.user.findUnique({ where: { email } });
 
   if (!user || !user.isActive) {
+    console.warn("[auth/google/callback] google identity accepted but user was not provisioned", {
+      email,
+      domainAccepted: true,
+      sessionCreated: false,
+    });
     return NextResponse.redirect(new URL(`/login?error=Your+account+is+not+provisioned+in+the+system.+Contact+an+administrator.`, request.url));
   }
+
+  const expiresAt =
+    typeof tokens.expires_in === "number" && Number.isFinite(tokens.expires_in)
+      ? new Date(Date.now() + tokens.expires_in * 1000)
+      : null;
+
+  await persistGoogleConnectionForUser({
+    userId: user.id,
+    googleSub,
+    googleEmail: email,
+    accessToken: tokens.access_token ?? null,
+    refreshToken: tokens.refresh_token ?? null,
+    scope: tokens.scope ?? null,
+    expiresAt,
+  });
 
   // 5. Establish robust Session Cookie
   const secretBytes = new TextEncoder().encode(process.env.NEXTAUTH_SECRET ?? "default-local-secret-for-dev");
@@ -82,6 +141,12 @@ export async function GET(request: Request) {
     sameSite: "lax",
     path: "/",
     maxAge: 7 * 24 * 60 * 60, // 7 days
+  });
+
+  console.info("[auth/google/callback] session created", {
+    email,
+    domainAccepted: true,
+    sessionCreated: true,
   });
 
   return response;

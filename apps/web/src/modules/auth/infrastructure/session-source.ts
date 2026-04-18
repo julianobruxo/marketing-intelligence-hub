@@ -1,6 +1,6 @@
 import { headers, cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import { AUTHORIZED_EMAIL_DOMAIN, env } from "@/shared/config/env";
+import { MIH_SESSION_COOKIE_NAME, verifyMihSessionCookie } from "../application/session-cookie";
 import type { UserSession } from "../domain/session";
 
 function normalizeGoogleEmail(rawValue: string | null) {
@@ -31,22 +31,15 @@ export async function getRequestIdentity(): Promise<UserSession | null> {
   }
 
   const cookieStore = await cookies();
-  const mihSession = cookieStore.get("mih_session")?.value;
+  const mihSession = cookieStore.get(MIH_SESSION_COOKIE_NAME)?.value;
+  const verifiedSession = await verifyMihSessionCookie(mihSession);
 
-  if (mihSession) {
-    try {
-      const secretBytes = new TextEncoder().encode(process.env.NEXTAUTH_SECRET ?? "default-local-secret-for-dev");
-      const { payload } = await jwtVerify(mihSession, secretBytes);
-      if (payload.email && isAuthorizedDomain(payload.email as string)) {
-        return {
-          email: payload.email as string,
-          roles: [],
-          mode: "cookie",
-        };
-      }
-    } catch {
-      // Intentionally ignore decryption errors yielding null eventually resolving into 401s naturally
-    }
+  if (verifiedSession) {
+    return {
+      email: verifiedSession.email,
+      roles: [],
+      mode: "cookie",
+    };
   }
 
   if (

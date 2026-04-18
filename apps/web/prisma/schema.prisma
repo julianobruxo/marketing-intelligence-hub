@@ -23,6 +23,47 @@ enum OrchestratorType {
   MANUAL
 }
 
+enum DriveImportBatchStatus {
+  STAGED
+  PARTIALLY_SENT
+  SENT_TO_QUEUE
+  NEEDS_REIMPORT_DECISION
+  FAILED
+}
+
+enum DriveSpreadsheetState {
+  STAGED
+  PARTIALLY_SENT
+  SENT_TO_QUEUE
+  NEEDS_REIMPORT_DECISION
+}
+
+enum DriveSpreadsheetRowState {
+  STAGED
+  QUEUE_PENDING
+  QUEUED
+  UPDATED
+  REPLACED
+  KEPT_AS_IS
+  DUPLICATE
+  CONFLICT
+  SKIPPED
+  REJECTED
+  PUBLISHED_COMPLETE
+}
+
+enum DriveConflictConfidence {
+  HIGH_CONFIDENCE_DUPLICATE
+  POSSIBLE_DUPLICATE
+  NO_MEANINGFUL_MATCH
+}
+
+enum DriveReimportStrategy {
+  UPDATE
+  REPLACE
+  KEEP_AS_IS
+}
+
 enum ImportMode {
   PREVIEW
   COMMIT
@@ -50,17 +91,32 @@ enum ContentType {
 }
 
 enum ContentStatus {
+  // ── Legacy states (kept for existing data) ─────────────────────────────
   IMPORTED
   IN_REVIEW
-  CHANGES_REQUESTED
   CONTENT_APPROVED
   DESIGN_REQUESTED
   DESIGN_IN_PROGRESS
+  // ── Active states ──────────────────────────────────────────────────────
+  CHANGES_REQUESTED
   DESIGN_FAILED
   DESIGN_READY
   DESIGN_APPROVED
-  TRANSLATION_PENDING
   TRANSLATION_APPROVED
+  // ── New intake ─────────────────────────────────────────────────────────
+  WAITING_FOR_COPY
+  READY_FOR_DESIGN
+  // ── New design ─────────────────────────────────────────────────────────
+  IN_DESIGN
+  // ── New translation ────────────────────────────────────────────────────
+  TRANSLATION_PENDING
+  TRANSLATION_REQUESTED
+  TRANSLATION_READY
+  // ── New review + post ──────────────────────────────────────────────────
+  READY_FOR_FINAL_REVIEW
+  READY_TO_POST
+  POSTED
+  // ── Legacy post ────────────────────────────────────────────────────────
   READY_TO_PUBLISH
   PUBLISHED_MANUALLY
 }
@@ -137,6 +193,26 @@ model User {
   notes     WorkflowNote[]
   approvals ApprovalRecord[]
   imports   ImportReceipt[] @relation("ImportedByUser")
+  driveImports SpreadsheetImportBatch[] @relation("ImportedDriveBatch")
+  googleConnection GoogleConnection?
+}
+
+model GoogleConnection {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  googleSub     String   @unique
+  googleEmail   String
+  accessToken   String   @db.Text
+  refreshToken  String?  @db.Text
+  scope         String?  @db.Text
+  expiresAt     DateTime?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([googleEmail])
+  @@index([active])
 }
 
 model UserRole {
@@ -156,9 +232,14 @@ model ContentItem {
   contentType         ContentType
   title               String
   copy                String            @db.Text
+  translationCopy     String?           @db.Text
+  translationRequestedAt DateTime?
+  translationGeneratedAt DateTime?
   sourceLocale        String            @default("en")
   translationStatus   TranslationStatus @default(NOT_REQUIRED)
   translationRequired Boolean           @default(false)
+  preferredDesignProvider DesignProvider?
+  autopostEnabled     Boolean           @default(false)
   currentStatus       ContentStatus     @default(IMPORTED)
   planningSnapshot    Json
   latestImportAt      DateTime?
@@ -305,4 +386,77 @@ model ContentAsset {
   updatedAt       DateTime       @updatedAt
   contentItem     ContentItem    @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
   designRequest   DesignRequest? @relation(fields: [designRequestId], references: [id], onDelete: SetNull)
+}
+
+model SpreadsheetImportBatch {
+  id                     String                 @id @default(cuid())
+  importedById           String?
+  driveFileId            String
+  spreadsheetId          String
+  spreadsheetName        String
+  folderName             String
+  owner                  String
+  sourceGroup            String
+  lastUpdatedAt          DateTime?
+  reimportStrategy       DriveReimportStrategy   @default(UPDATE)
+  status                 DriveImportBatchStatus   @default(STAGED)
+  scanFingerprint        String
+  sourceContext          Json
+  pipelineSignals        Json
+  validWorksheetCount    Int                    @default(0)
+  detectedRowCount       Int                    @default(0)
+  qualifiedRowCount      Int                    @default(0)
+  importedRowCount       Int                    @default(0)
+  updatedRowCount        Int                    @default(0)
+  replacedRowCount       Int                    @default(0)
+  keptRowCount           Int                    @default(0)
+  conflictCount          Int                    @default(0)
+  alreadyPublishedRowCount Int                  @default(0)
+  stagedAt               DateTime               @default(now())
+  queuedAt               DateTime?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  importedBy             User?                  @relation("ImportedDriveBatch", fields: [importedById], references: [id], onDelete: SetNull)
+  rows                   SpreadsheetImportRow[]
+
+  @@index([spreadsheetId])
+  @@index([status, stagedAt])
+}
+
+model SpreadsheetImportRow {
+  id                     String                   @id @default(cuid())
+  batchId                String
+  worksheetId            String
+  worksheetName          String
+  rowId                  String
+  rowNumber              Int?
+  rowVersion             String?
+  rowKind                String                   @default("DATA")
+  rowStatus              DriveSpreadsheetRowState @default(STAGED)
+  conflictConfidence     DriveConflictConfidence   @default(NO_MEANINGFUL_MATCH)
+  conflictAction         DriveReimportStrategy?
+  existingContentItemId  String?
+  contentItemId          String?
+  title                  String
+  idea                   String?
+  copy                   String                   @db.Text
+  translationDraft       String?                  @db.Text
+  plannedDate            String?
+  publishedFlag          String?
+  publishedPostUrl       String?
+  sourceAssetLink        String?
+  translationRequired    Boolean                  @default(false)
+  autoPostEnabled        Boolean                  @default(false)
+  preferredDesignProvider DesignProvider?
+  matchSignals           Json
+  rowPayload             Json
+  normalizedPayload      Json?
+  conflictSuggestion     Json?
+  reason                 String?                  @db.Text
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  batch                  SpreadsheetImportBatch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, rowId])
+  @@index([batchId, rowStatus])
 }

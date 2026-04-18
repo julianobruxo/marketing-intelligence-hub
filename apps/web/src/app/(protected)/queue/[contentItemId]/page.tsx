@@ -1,19 +1,20 @@
 import Link from "next/link";
 import {
-  ArrowLeft,
   AlertTriangle,
   Clock,
+  ExternalLink,
 } from "lucide-react";
-import { ApprovalDecision, ApprovalStage, DesignRequestStatus } from "@prisma/client";
+import type { ReactNode } from "react";
+import { ApprovalDecision, ApprovalStage, DesignProvider, DesignRequestStatus } from "@prisma/client";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  buildApprovalCheckpoints,
   buildContentTimeline,
-  buildDesignAttemptHistory,
   buildOperationalSummary,
   buildTemplateRoutingSummary,
 } from "@/modules/content-catalog/application/content-workflow-view-model";
+import { getPublishedPreview } from "@/modules/content-catalog/application/content-preview";
 import { getContentItemDetail } from "@/modules/content-catalog/application/content-queries";
 import {
   approveDesignReadyAction,
@@ -26,9 +27,13 @@ import {
   addWorkflowNoteAction,
   recordApprovalAction,
   recordApprovalActionWithDecision,
+  recordPostedAction,
 } from "@/modules/workflow/application/workflow-actions";
 import { canRecordApprovalAction } from "@/modules/workflow/domain/phase-one-workflow";
 import { CollapsibleSection } from "./collapsible-section";
+import { ItemHeader } from "./item-header";
+import { formatOperationalLabel } from "@/shared/ui/operational-status";
+import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-intake/domain/infer-content-status";
 
 // ─── Label helpers ────────────────────────────────────────────────────────────
 
@@ -47,7 +52,8 @@ function fieldDisplayLabel(rawKey: string): string {
     sheetProfileKey: "Sheet profile",
     titleDerivation: "Title derivation",
     publishedFlag: "Published",
-    publishedPostLink: "Published post link",
+    publishedPostUrl: "Published post link",
+    sourceAssetLink: "Source asset link",
     // snake_case variants (in case they appear)
     COPYENGLISH: "Copy (English)",
     COPYPORTUGUESE: "Copy (Portuguese)",
@@ -58,7 +64,8 @@ function fieldDisplayLabel(rawKey: string): string {
     SHEETPROFILEKEY: "Sheet profile",
     TITLEDERIVATION: "Title derivation",
     PUBLISHEDFLAG: "Published",
-    PUBLISHEDPOSTLINK: "Published post link",
+    PUBLISHEDPOSTURL: "Published post link",
+    SOURCEASSETLINK: "Source asset link",
   };
 
   if (MAP[rawKey]) return MAP[rawKey];
@@ -77,59 +84,32 @@ function formatLabel(value: string) {
   return value.toLowerCase().replaceAll("_", " ");
 }
 
-function formatProfileLabel(profile: string) {
-  switch (profile) {
-    case "YANN":
-      return "Yann";
-    case "YURI":
-      return "Yuri";
-    case "SHAWN":
-      return "Shawn";
-    case "SOPHIAN_YACINE":
-      return "Sophian Yacine";
-    case "ZAZMIC_PAGE":
-      return "Zazmic Page";
-    default:
-      return profile.toLowerCase().replaceAll("_", " ");
-  }
-}
 
-function profileBadgeStyle(profile: string): { backgroundColor: string; color: string } {
-  switch (profile) {
-    case "YANN":
-      return { backgroundColor: "#DBEAFE", color: "#1E40AF" };
-    case "YURI":
-      return { backgroundColor: "#FEE2E2", color: "#991B1B" };
-    case "SHAWN":
-      return { backgroundColor: "#D1FAE5", color: "#065F46" };
-    case "SOPHIAN_YACINE":
-      return { backgroundColor: "#E9D5FF", color: "#6B21A8" };
-    case "ZAZMIC_PAGE":
-      return { backgroundColor: "#FFEDD5", color: "#9A3412" };
+function formatDesignProviderLabel(provider: DesignProvider | null | undefined) {
+  if (!provider) {
+    return "Manual";
+  }
+
+  switch (provider) {
+    case "CANVA":
+      return "Canva template";
+    case "AI_VISUAL":
+      return "Nano Banana 2";
+    case "MANUAL":
+      return "Manual";
     default:
-      return { backgroundColor: "#F1F5F9", color: "#475569" };
+      return "Manual";
   }
 }
 
 function formatStatusLabel(status: string): string {
-  return status
-    .toLowerCase()
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return formatOperationalLabel(status);
 }
 
 function formatDateTime(value: Date) {
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
-  }).format(value);
-}
-
-function formatDateShort(value: Date) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
   }).format(value);
 }
 
@@ -216,7 +196,7 @@ function KvRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
+function SectionHeading({ children }: { children: ReactNode }) {
   return (
     <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 mb-2">
       {children}
@@ -239,10 +219,8 @@ export default async function ContentItemDetailPage({
   const sourceMetadataFields = getSourceMetadataEntries(item.planningSnapshot);
   const normalizationSnapshot = getNormalizationSnapshot(item.planningSnapshot);
   const timelineEntries = buildContentTimeline(item);
-  const approvalCheckpoints = buildApprovalCheckpoints(item);
   const operationalSummary = buildOperationalSummary(item);
   const templateRouting = buildTemplateRoutingSummary(item);
-  const designAttemptHistory = buildDesignAttemptHistory(item);
 
   // Derived data
   const latestDesignRequest = item.designRequests[0];
@@ -256,22 +234,27 @@ export default async function ContentItemDetailPage({
     contentType: item.contentType,
     sourceLocale: item.sourceLocale,
   });
-  const canvaSliceReady = canvaEligible && item.currentStatus === "CONTENT_APPROVED";
+  const canvaSliceReady =
+    canvaEligible &&
+    (item.currentStatus === "CONTENT_APPROVED" || item.currentStatus === "READY_FOR_DESIGN");
   const canvaRetryReady = canvaEligible && item.currentStatus === "DESIGN_FAILED";
   const canRefreshDesign =
     latestDesignRequest &&
     (latestDesignRequest.status === DesignRequestStatus.REQUESTED ||
       latestDesignRequest.status === DesignRequestStatus.IN_PROGRESS);
-  const canRecordPublishApproval = canRecordApprovalAction({
-    currentStatus: item.currentStatus,
-    stage: ApprovalStage.PUBLISH,
-  });
   const canRecordTranslationApproval =
     item.translationRequired &&
     canRecordApprovalAction({
       currentStatus: item.currentStatus,
       stage: ApprovalStage.TRANSLATION,
     });
+  const operationalStatus = readOperationalStatusFromPlanningSnapshot(item.planningSnapshot);
+  const publishedPreview =
+    operationalStatus === "PUBLISHED" ||
+    item.currentStatus === "PUBLISHED_MANUALLY" ||
+    item.currentStatus === "POSTED"
+      ? getPublishedPreview({ planningSnapshot: item.planningSnapshot, assets: item.assets })
+      : null;
 
   // Determine primary action type for the prominent card
   type PrimaryActionKind =
@@ -279,8 +262,9 @@ export default async function ContentItemDetailPage({
     | "design_refresh"
     | "design_retry"
     | "design_approve"
-    | "publish_approve"
     | "translation_approve"
+    | "final_review"
+    | "post_on_li"
     | "review"
     | "waiting";
 
@@ -289,18 +273,29 @@ export default async function ContentItemDetailPage({
   else if (canRefreshDesign) primaryActionKind = "design_refresh";
   else if (canvaRetryReady) primaryActionKind = "design_retry";
   else if (item.currentStatus === "DESIGN_READY") primaryActionKind = "design_approve";
-  else if (canRecordPublishApproval) primaryActionKind = "publish_approve";
+  else if (item.currentStatus === "READY_FOR_FINAL_REVIEW") primaryActionKind = "final_review";
+  else if (
+    item.currentStatus === "READY_TO_POST" ||
+    item.currentStatus === "READY_TO_PUBLISH"
+  ) primaryActionKind = "post_on_li";
   else if (canRecordTranslationApproval) primaryActionKind = "translation_approve";
-  else if (item.currentStatus === "IMPORTED" || item.currentStatus === "IN_REVIEW") primaryActionKind = "review";
+  else if (
+    item.currentStatus === "IMPORTED" ||
+    item.currentStatus === "IN_REVIEW" ||
+    item.currentStatus === "WAITING_FOR_COPY" ||
+    item.currentStatus === "CHANGES_REQUESTED"
+  ) primaryActionKind = "review";
+  const showContinueProcessPrimary = primaryActionKind === "review";
 
   const primaryActionLabel: Record<PrimaryActionKind, string> = {
-    design_start: "Start design handoff",
-    design_refresh: "Refresh active design handoff",
-    design_retry: "Retry failed design attempt",
-    design_approve: "Approve the generated design",
-    publish_approve: "Record publish approval",
-    translation_approve: "Record translation approval",
-    review: "Review content and approve",
+    design_start: "Generate Design",
+    design_refresh: "Sync Design",
+    design_retry: "Retry Design",
+    design_approve: "Approve Design",
+    translation_approve: "Approve Translation",
+    final_review: "Final Review",
+    post_on_li: "POST on LI",
+    review: "Continue Process",
     waiting: operationalSummary.waitingOn,
   };
 
@@ -320,97 +315,76 @@ export default async function ContentItemDetailPage({
       ? plannedDateRaw
       : null;
 
+  const contentDeadlineRaw = planningSnapshotRaw?.contentDeadline;
+  const contentDeadlineDisplay =
+    contentDeadlineRaw && typeof contentDeadlineRaw === "string" && contentDeadlineRaw.trim()
+      ? contentDeadlineRaw
+      : null;
+
+  const updatedAtStr = (item.latestImportAt ?? item.updatedAt).toISOString();
+
   return (
     <div className="mx-auto max-w-4xl space-y-4 animate-fade-in-up">
 
       {/* ══════════════════════════════════════════════════════════════════ */}
-      {/* ZONE 1 — Identity strip                                           */}
+      {/* ZONE 1 — Item header (compact + expandable)                       */}
       {/* ══════════════════════════════════════════════════════════════════ */}
-      <section className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm" style={{ animationDelay: '0ms' }}>
-        <div className="flex items-start gap-3">
-          <Link
-            href="/queue"
-            className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-slate-400 hover:text-slate-900"
-            aria-label="Back to queue"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-          </Link>
+      <ItemHeader
+        title={item.title}
+        profile={item.profile}
+        currentStatus={item.currentStatus}
+        operationalStatus={operationalStatus}
+        contentDeadline={contentDeadlineDisplay}
+        plannedDate={plannedDateDisplay}
+        primaryActionKind={primaryActionKind}
+        updatedAt={updatedAtStr}
+        sourceWorksheetName={latestSourceLink?.worksheetName ?? null}
+        sourceRowRef={
+          latestSourceLink
+            ? `Row ${latestSourceLink.rowNumber ?? latestSourceLink.rowId}`
+            : null
+        }
+        importMode={latestImportReceipt ? formatLabel(latestImportReceipt.mode) : null}
+        importStatus={latestImportReceipt ? formatLabel(latestImportReceipt.status) : null}
+        templateRouteLabel={templateRouting.activeRouteLabel ?? null}
+        translationRequired={item.translationRequired}
+        translationStatus={item.translationStatus}
+        preferredDesignProvider={item.preferredDesignProvider ?? "MANUAL"}
+        contentType={item.contentType}
+      />
 
-          <div className="min-w-0 flex-1 space-y-2">
-            {/* Badges row */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span
-                className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
-                style={profileBadgeStyle(item.profile)}
-              >
-                {formatProfileLabel(item.profile)}
-              </span>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] text-slate-600">
-                {item.contentType === "STATIC_POST" ? "Static post" : "Carousel"}
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] text-slate-700">
-                <span
-                  className={`inline-block h-1.5 w-1.5 rounded-full ${
-                    item.currentStatus.includes("FAIL") || item.currentStatus.includes("CHANGES")
-                      ? "bg-rose-500"
-                      : item.currentStatus.includes("READY") || item.currentStatus.includes("APPROVED") || item.currentStatus.includes("PUBLISHED")
-                        ? "bg-emerald-500"
-                        : item.currentStatus.includes("PROGRESS") || item.currentStatus.includes("REQUESTED")
-                          ? "bg-amber-400"
-                          : "bg-sky-500"
-                  }`}
-                />
-                {formatStatusLabel(item.currentStatus)}
-              </span>
-              {item.translationRequired ? (
-                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] text-slate-600">
-                  Translation required
-                </span>
-              ) : (
-                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] text-slate-600">
-                  English only
-                </span>
-              )}
+      {publishedPreview ? (
+        <section className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+              <img
+                src={publishedPreview.previewUrl}
+                alt={`${item.title} preview`}
+                className="h-40 w-full object-cover sm:h-28 sm:w-40"
+              />
             </div>
-
-            {/* Title */}
-            <h1 className="text-lg font-semibold leading-snug tracking-tight" style={{ color: '#0F172A' }}>
-              {item.title}
-            </h1>
-
-            {/* Secondary trace line */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
-              {latestSourceLink ? (
-                <span>
-                  Row {latestSourceLink.rowId} in{" "}
-                  <span className="text-slate-500">{latestSourceLink.worksheetName}</span>
-                </span>
-              ) : null}
-              {latestImportReceipt ? (
-                <>
-                  <span>·</span>
-                  <span>
-                    {formatLabel(latestImportReceipt.mode)} /{" "}
-                    {formatLabel(latestImportReceipt.status)}
-                  </span>
-                </>
-              ) : null}
-              {templateRouting.activeRouteLabel && templateRouting.activeRouteLabel !== "No active mapping" ? (
-                <>
-                  <span>·</span>
-                  <span>{templateRouting.activeRouteLabel}</span>
-                </>
-              ) : null}
-              {plannedDateDisplay ? (
-                <>
-                  <span>·</span>
-                  <span>Planned {plannedDateDisplay}</span>
-                </>
-              ) : null}
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
+                Published preview
+              </p>
+              <p className="mt-2 text-sm text-slate-700">
+                A stored visual reference is available for this published item, so the team does not need to go back to the spreadsheet for context.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <a
+                  href={publishedPreview.referenceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                >
+                  Open reference
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       {/* ══════════════════════════════════════════════════════════════════ */}
       {/* ZONE 2 — Action zone                                              */}
@@ -444,7 +418,7 @@ export default async function ContentItemDetailPage({
             Primary action
           </p>
           <h2 className="mt-2 text-xl font-semibold tracking-tight" style={{ color: '#0F172A' }}>
-            {primaryActionLabel[primaryActionKind]}
+            {showContinueProcessPrimary ? "Continue Process" : primaryActionLabel[primaryActionKind]}
           </h2>
           <p className="mt-1.5 text-sm leading-6" style={{ color: '#64748B' }}>
             {operationalSummary.nextStep}
@@ -465,7 +439,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Start design handoff
+                  Start visual generation
                 </Button>
               </form>
             )}
@@ -478,7 +452,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Refresh active handoff
+                  Refresh visual handoff
                 </Button>
               </form>
             )}
@@ -496,7 +470,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Retry failed handoff
+                  Retry visual generation
                 </Button>
               </form>
             )}
@@ -509,19 +483,19 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Approve generated design
+                  Approve visual result
                 </Button>
               </form>
             )}
 
-            {primaryActionKind === "publish_approve" && (
+            {primaryActionKind === "final_review" && (
               <>
                 <form action={recordApprovalAction}>
                   <input type="hidden" name="contentItemId" value={item.id} />
                   <input type="hidden" name="stage" value={ApprovalStage.PUBLISH} />
                   <input type="hidden" name="decision" value="APPROVED" />
                   <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
-                    Approve for publish
+                    Approve — ready to post
                   </Button>
                 </form>
                 <form action={recordApprovalActionWithDecision.bind(null, ApprovalDecision.CHANGES_REQUESTED)}>
@@ -537,6 +511,19 @@ export default async function ContentItemDetailPage({
                   </Button>
                 </form>
               </>
+            )}
+
+            {primaryActionKind === "post_on_li" && (
+              <form action={recordPostedAction}>
+                <input type="hidden" name="contentItemId" value={item.id} />
+                <Button
+                  type="submit"
+                  className="transition-default font-semibold"
+                  style={{ backgroundColor: '#0A66C2', color: 'white' }}
+                >
+                  POST on LI
+                </Button>
+              </form>
             )}
 
             {primaryActionKind === "translation_approve" && (
@@ -564,15 +551,10 @@ export default async function ContentItemDetailPage({
               </>
             )}
 
-            {primaryActionKind === "review" && (
-              <form action={recordApprovalAction}>
-                <input type="hidden" name="contentItemId" value={item.id} />
-                <input type="hidden" name="stage" value={ApprovalStage.PUBLISH} />
-                <input type="hidden" name="decision" value="APPROVED" />
-                <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
-                  Approve for publish
-                </Button>
-              </form>
+            {showContinueProcessPrimary && (
+              <Button asChild className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
+                <Link href="#secondary-actions">Continue Process</Link>
+              </Button>
             )}
           </div>
         </section>
@@ -586,14 +568,29 @@ export default async function ContentItemDetailPage({
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#D97706' }} />
           <div>
-            <p className="text-sm font-semibold" style={{ color: '#92400E' }}>Active blocker</p>
+            <p className="text-sm font-semibold" style={{ color: '#92400E' }}>Blocked</p>
             <p className="mt-0.5 text-sm" style={{ color: '#78350F' }}>{operationalSummary.blocker}</p>
           </div>
         </div>
       ) : null}
 
       {/* 2C — Secondary actions */}
-      <section className="space-y-4 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm" style={{ animationDelay: '100ms' }}>
+      {!operationalSummary.blocker && operationalStatus === "LATE" ? (
+        <div
+          className="flex items-start gap-3 rounded-xl border border-l-4 bg-white px-4 py-3.5 shadow-sm"
+          style={{ borderLeftColor: '#E11D48', borderColor: '#FDA4AF' }}
+        >
+          <Clock className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#E11D48' }} />
+          <div>
+            <p className="text-sm font-semibold" style={{ color: '#9F1239' }}>Overdue</p>
+            <p className="mt-0.5 text-sm" style={{ color: '#881337' }}>
+              The deadline passed, but this item can still continue through the workflow.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <section id="secondary-actions" className="space-y-4 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm" style={{ animationDelay: '100ms' }}>
         <div>
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
             Add a note or revision
@@ -622,37 +619,6 @@ export default async function ContentItemDetailPage({
         </div>
 
         {/* Approval forms — secondary, shown only when available and not already primary */}
-        {canRecordPublishApproval && primaryActionKind !== "publish_approve" && (
-          <div className="border-t border-slate-100 pt-4">
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-              Publish approval
-            </p>
-            <form action={recordApprovalAction} className="mt-3 space-y-3">
-              <input type="hidden" name="contentItemId" value={item.id} />
-              <input type="hidden" name="stage" value={ApprovalStage.PUBLISH} />
-              <input type="hidden" name="decision" value="APPROVED" />
-              <Textarea
-                name="note"
-                placeholder="Optional publish approval note."
-                className="min-h-20 bg-white"
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
-                  Record publish approval
-                </Button>
-                <Button
-                  formAction={recordApprovalActionWithDecision.bind(null, ApprovalDecision.CHANGES_REQUESTED)}
-                  type="submit"
-                  variant="outline"
-                  className="border-slate-300 text-slate-900 hover:bg-slate-50"
-                >
-                  Request changes
-                </Button>
-              </div>
-            </form>
-          </div>
-        )}
-
         {canRecordTranslationApproval && primaryActionKind !== "translation_approve" && (
           <div className="border-t border-slate-100 pt-4">
             <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
@@ -858,9 +824,64 @@ export default async function ContentItemDetailPage({
 
           {/* Content copy */}
           <div>
-            <SectionHeading>Content copy</SectionHeading>
+            <SectionHeading>Read-only copy</SectionHeading>
             <div className="rounded-xl border border-slate-100 px-3 py-3">
               <p className="text-sm leading-6 text-slate-900 whitespace-pre-wrap">{item.copy}</p>
+            </div>
+          </div>
+
+          <div>
+            <SectionHeading>Generated translation</SectionHeading>
+            <div className="rounded-xl border border-slate-100 px-3 py-3">
+              <div className="space-y-2 border-b border-slate-100 pb-3">
+                <KvRow
+                  label="Translation status"
+                  value={formatStatusLabel(item.translationStatus)}
+                />
+                <KvRow
+                  label="Translation required"
+                  value={item.translationRequired ? "Yes" : "No"}
+                />
+                <KvRow
+                  label="Requested at"
+                  value={
+                    item.translationRequestedAt ? formatDateTime(item.translationRequestedAt) : "—"
+                  }
+                />
+                <KvRow
+                  label="Generated at"
+                  value={
+                    item.translationGeneratedAt ? formatDateTime(item.translationGeneratedAt) : "—"
+                  }
+                />
+              </div>
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-900">
+                {item.translationCopy && item.translationCopy.trim().length > 0
+                  ? item.translationCopy
+                  : "Translation has not been generated yet."}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <SectionHeading>Workflow preferences</SectionHeading>
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
+              <KvRow
+                label="Visual generation mode"
+                value={formatDesignProviderLabel(item.preferredDesignProvider)}
+              />
+              <KvRow
+                label="LinkedIn autopost"
+                value={item.autopostEnabled ? "Enabled" : "Manual fallback"}
+              />
+              <KvRow
+                label="Source spreadsheet"
+                value={latestSourceLink ? latestSourceLink.spreadsheetId : "—"}
+              />
+              <KvRow
+                label="Source worksheet"
+                value={latestSourceLink ? latestSourceLink.worksheetName : "—"}
+              />
             </div>
           </div>
 
