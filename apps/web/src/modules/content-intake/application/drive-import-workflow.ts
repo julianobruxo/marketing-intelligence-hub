@@ -1145,20 +1145,21 @@ async function stageDriveSpreadsheetToStaging(input: {
     for (const aiRow of analysis.rows) {
       detectedRowCount += 1;
 
-      if (!aiRow.isValid) {
+      // Only import rows classified as LINKEDIN_ONLY by the AI analyzer
+      if (!aiRow.isValid || aiRow.platformClassification !== "LINKEDIN_ONLY") {
         skippedRowCount += 1;
-        logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:skip", {
+        logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:skip-platform", {
           spreadsheetId: record.spreadsheetId,
           worksheetId: worksheet.worksheetId,
           worksheetName: worksheet.worksheetName,
           rowIndex: aiRow.rowIndex,
           rowType: aiRow.rowType,
           confidence: aiRow.confidence,
+          platformClassification: aiRow.platformClassification,
           reason: aiRow.reason,
         });
         continue;
       }
-
       // Post-AI filter: deterministic checks + minimum content gate.
       // Runs after AI validation to catch patterns AI may miss and drop false positives.
       const rawRowAtReportedIndex = worksheet.rows[aiRow.rowIndex - 1] ?? [];

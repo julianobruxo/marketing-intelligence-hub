@@ -46,6 +46,14 @@ const aiSheetRowDataSchema = z.object({
   channel: aiSheetColumnValueSchema,
 });
 
+
+const aiSheetPlatformClassificationSchema = z.enum([
+  "LINKEDIN_ONLY",
+  "NON_LINKEDIN",
+  "MIXED_CHANNELS",
+  "AMBIGUOUS",
+]);
+
 const aiSheetRowSchema = z.object({
   rowIndex: z.number().int().positive(),
   rowType: aiSheetRowTypeSchema,
@@ -54,6 +62,7 @@ const aiSheetRowSchema = z.object({
   reason: z.string(),
   data: aiSheetRowDataSchema,
   suggestedStatus: aiSheetStatusSchema,
+  platformClassification: aiSheetPlatformClassificationSchema,
 });
 
 export const aiSheetAnalysisResultSchema = z.object({
@@ -128,15 +137,45 @@ const AI_SHEET_ANALYSIS_SCHEMA = {
             type: "string",
             enum: ["WAITING_FOR_COPY", "READY_FOR_DESIGN", "LATE", "PUBLISHED"],
           },
+          platformClassification: {
+            type: "string",
+            enum: [
+              "LINKEDIN_ONLY",
+              "NON_LINKEDIN",
+              "MIXED_CHANNELS",
+              "AMBIGUOUS",
+            ],
+          },
         },
-        required: ["rowIndex", "rowType", "isValid", "confidence", "reason", "data", "suggestedStatus"],
+        required: ["rowIndex", "rowType", "isValid", "confidence", "reason", "data", "suggestedStatus", "platformClassification"],
       },
     },
   },
   required: ["tableDetected", "columns", "rows"],
 } as const;
 
+
 const AI_SHEET_ANALYSIS_PROMPT = `You are an expert at analyzing marketing content planning spreadsheets.
+
+For every row, you must classify the platform intent using all available context. For each row, set a field "platformClassification" to one of:
+- LINKEDIN_ONLY: The row is exclusively for LinkedIn workflow (no other platform is referenced or implied)
+- NON_LINKEDIN: The row is for another platform (e.g., X/Twitter, Substack, blog, newsletter, etc.)
+- MIXED_CHANNELS: The row is for LinkedIn plus any other platform, or describes cross-posting, multi-channel, or ambiguous/mixed distribution
+- AMBIGUOUS: The row's platform cannot be confidently determined as LinkedIn-only
+
+Default: If there is any uncertainty, use AMBIGUOUS. Only classify as LINKEDIN_ONLY if the row is clearly and exclusively for LinkedIn.
+
+Examples:
+| title | copy | channel | → platformClassification |
+|-------|------|---------|------------------------|
+| "LinkedIn carousel for Yann" | ... | LinkedIn | LINKEDIN_ONLY |
+| "X thread for Yann" | ... | X | NON_LINKEDIN |
+| "LinkedIn + Substack" | ... | LinkedIn | MIXED_CHANNELS |
+| "Repurpose for LinkedIn and X" | ... | LinkedIn | MIXED_CHANNELS |
+| "Post on Yann account" | ... | X | NON_LINKEDIN |
+| "Customer story" | ... | (empty) | AMBIGUOUS |
+
+
 
 ## Your role
 

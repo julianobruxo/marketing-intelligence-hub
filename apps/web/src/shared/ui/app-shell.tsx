@@ -1,19 +1,15 @@
+import Image from "next/image";
 import Link from "next/link";
 import { Download, FileText, PanelsTopLeft, Settings2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { UserSession } from "@/modules/auth/domain/session";
+import { UserMenu } from "./user-menu";
 
 const navigation = [
   { href: "/queue", label: "Queue", icon: FileText },
   { href: "/import", label: "Import", icon: Download },
-  {
-    href: "/templates",
-    label: "Templates",
-    icon: PanelsTopLeft,
-    disabled: true,
-  },
-  { href: "/settings", label: "Settings", icon: Settings2, disabled: true },
+  { href: "/templates", label: "Templates", icon: PanelsTopLeft, disabled: true },
+  { href: "/settings", label: "Settings", icon: Settings2 },
 ];
 
 export function AppShell({
@@ -24,36 +20,38 @@ export function AppShell({
   session: UserSession;
 }>) {
   return (
-    <div className="relative min-h-screen" style={{ backgroundColor: "#F0F4F8" }}>
-      <div className="relative mx-auto grid min-h-screen max-w-[1600px] lg:grid-cols-[220px_minmax(0,1fr)]">
-        {/* ── Sidebar ─────────────────────────────────────────────────── */}
-        <aside className="hidden border-r border-slate-200 bg-white px-4 py-5 lg:flex lg:flex-col shadow-sm">
-          {/* Brand */}
-          <div className="space-y-3 pb-5 border-b border-slate-100">
-            <Badge
-              className="w-fit rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] font-medium hover:bg-slate-50"
-              style={{ color: "#64748B" }}
-            >
-              Pipeline #1
-            </Badge>
-            <div>
-              <h1 className="text-[15px] font-semibold tracking-tight leading-snug" style={{ color: "#0F172A" }}>
-                Marketing Intelligence Hub
-              </h1>
+    <div className="relative min-h-screen overflow-hidden" style={{ backgroundColor: "var(--page-bg)" }}>
+      <div className="relative mx-auto grid min-h-screen max-w-[1640px] lg:grid-cols-[258px_minmax(0,1fr)]">
+        <aside
+          className="hidden border-r lg:flex lg:flex-col"
+          style={{ background: "var(--shell-bg)", borderColor: "var(--shell-border)" }}
+        >
+          <div className="border-b px-4 py-4" style={{ borderColor: "var(--shell-subtle-border)" }}>
+            <div className="rounded-[16px] border border-white/10 bg-[#070B1B] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <Image
+                src="/logo.jpeg"
+                alt="Zazmic"
+                width={190}
+                height={80}
+                className="h-8 w-auto"
+                priority
+              />
             </div>
+            <h1 className="mt-4 text-[29px] leading-none font-semibold tracking-[-0.04em] text-slate-950 dark:text-slate-100">
+              Marketing Intelligence Hub
+            </h1>
           </div>
 
-          {/* Nav */}
-          <nav className="mt-4 flex flex-1 flex-col gap-1">
+          <nav className="mt-3 flex flex-1 flex-col gap-1.5 px-3 pb-4">
             {navigation.map(({ href, label, icon: Icon, disabled }) => (
               <Link
                 key={href}
                 href={disabled ? "#" : href}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-default",
+                  "flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-[18px] font-medium transition-default",
                   disabled
-                    ? "cursor-not-allowed text-slate-300"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
+                    ? "cursor-not-allowed border-transparent text-slate-400/70 opacity-40"
+                    : "border-transparent text-[#466697] hover:border-sky-200/65 hover:bg-white/55 hover:text-[#213565] hover:shadow-[0_12px_24px_-20px_rgba(10,102,194,0.42)] dark:text-[#8FA2C8] dark:hover:border-[rgba(124,132,252,0.25)] dark:hover:bg-[rgba(98,104,191,0.12)] dark:hover:text-slate-100 dark:hover:shadow-[0_12px_24px_-20px_rgba(90,102,230,0.6)]",
                 )}
               >
                 <Icon className="h-4 w-4 flex-shrink-0" />
@@ -61,62 +59,25 @@ export function AppShell({
               </Link>
             ))}
           </nav>
-
-          {/* User card */}
-          <div
-            className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] font-medium uppercase tracking-[0.16em]" style={{ color: "#94A3B8" }}>
-                Signed in
-              </p>
-              <Badge
-                variant="outline"
-                className="rounded-full border-slate-200 bg-white px-2 py-0 text-[10px]"
-                style={{ color: "#64748B" }}
-              >
-                {session.mode === "iap" ? "IAP" : session.mode === "cookie" ? "Cookie" : "Dev"}
-              </Badge>
-            </div>
-            <div>
-              <p className="text-sm font-semibold truncate" style={{ color: "#0F172A" }}>
-                {session.name ?? session.email}
-              </p>
-              <p className="text-xs truncate mt-0.5" style={{ color: "#64748B" }}>
-                {session.email}
-              </p>
-            </div>
-            <p className="text-[11px] leading-5" style={{ color: "#94A3B8" }}>
-              Roles:{" "}
-              {session.roles.length > 0
-                ? session.roles.join(", ")
-                : "Awaiting assignment"}
-            </p>
-          </div>
         </aside>
 
-        {/* ── Main content ─────────────────────────────────────────────── */}
         <div className="flex min-h-screen min-w-0 flex-col">
-          <header className="border-b border-slate-200/80 bg-white/80 px-4 py-2.5 backdrop-blur md:px-5 lg:px-6">
+          <header
+            className="sticky top-0 z-30 border-b px-4 py-3 backdrop-blur-xl md:px-5 lg:px-6"
+            style={{
+              background: "var(--shell-header-bg)",
+              borderColor: "var(--shell-border)",
+            }}
+          >
             <div className="flex items-center justify-between gap-4">
-              <p className="text-xs" style={{ color: "#94A3B8" }}>
+              <p className="text-sm font-medium tracking-[-0.01em] text-[#6A8EC6] dark:text-[#7C8FB5]">
                 Google Drive → Staging → Workflow Queue
               </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  variant="outline"
-                  className="rounded-full border-slate-200 bg-transparent px-2.5 py-0.5 text-[11px]"
-                  style={{ color: "#94A3B8" }}
-                >
-                  Protected internal surface
-                </Badge>
-              </div>
+              <UserMenu session={session} />
             </div>
           </header>
 
-          <main className="flex-1 px-4 py-5 md:px-6 lg:px-8 lg:py-6">
-            {children}
-          </main>
+          <main className="flex-1 px-4 py-4 md:px-6 lg:px-8 lg:py-5">{children}</main>
         </div>
       </div>
     </div>

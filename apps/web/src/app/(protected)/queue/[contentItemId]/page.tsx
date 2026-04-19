@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { ApprovalDecision, ApprovalStage, DesignProvider, DesignRequestStatus } from "@prisma/client";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -145,6 +144,46 @@ function getNormalizationSnapshot(planningSnapshot: unknown) {
     : null;
 }
 
+function getTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function extractOriginalCopy(
+  planningSnapshot: unknown,
+  fallbackTitle: string,
+  fallbackCopy: string | null,
+) {
+  const snapshot =
+    planningSnapshot && typeof planningSnapshot === "object"
+      ? (planningSnapshot as Record<string, unknown>)
+      : null;
+  const planning =
+    snapshot?.planning && typeof snapshot.planning === "object"
+      ? (snapshot.planning as Record<string, unknown>)
+      : null;
+  const normalization =
+    snapshot?.normalization && typeof snapshot.normalization === "object"
+      ? (snapshot.normalization as Record<string, unknown>)
+      : null;
+  const titleDerivation =
+    normalization?.titleDerivation && typeof normalization.titleDerivation === "object"
+      ? (normalization.titleDerivation as Record<string, unknown>)
+      : null;
+
+  const body =
+    getTrimmedString(planning?.copyEnglish) ??
+    getTrimmedString(planning?.copyPortuguese) ??
+    getTrimmedString(fallbackCopy);
+
+  const title = body
+    ? getTrimmedString(titleDerivation?.title) ??
+      getTrimmedString(planning?.campaignLabel) ??
+      fallbackTitle
+    : null;
+
+  return { title, body };
+}
+
 function formatPlanningValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -269,7 +308,9 @@ export default async function ContentItemDetailPage({
     | "waiting";
 
   let primaryActionKind: PrimaryActionKind = "waiting";
-  if (canvaSliceReady) primaryActionKind = "design_start";
+  if (operationalStatus === "WAITING_FOR_COPY") {
+    primaryActionKind = "waiting";
+  } else if (canvaSliceReady) primaryActionKind = "design_start";
   else if (canRefreshDesign) primaryActionKind = "design_refresh";
   else if (canvaRetryReady) primaryActionKind = "design_retry";
   else if (item.currentStatus === "DESIGN_READY") primaryActionKind = "design_approve";
@@ -292,9 +333,9 @@ export default async function ContentItemDetailPage({
     design_refresh: "Sync Design",
     design_retry: "Retry Design",
     design_approve: "Approve Design",
-    translation_approve: "Approve Translation",
+    translation_approve: "Review Translation",
     final_review: "Final Review",
-    post_on_li: "POST on LI",
+    post_on_li: "Post to LinkedIn",
     review: "Continue Process",
     waiting: operationalSummary.waitingOn,
   };
@@ -320,6 +361,11 @@ export default async function ContentItemDetailPage({
     contentDeadlineRaw && typeof contentDeadlineRaw === "string" && contentDeadlineRaw.trim()
       ? contentDeadlineRaw
       : null;
+  const originalCopy = extractOriginalCopy(
+    item.planningSnapshot,
+    item.title,
+    typeof item.copy === "string" ? item.copy : null,
+  );
 
   const updatedAtStr = (item.latestImportAt ?? item.updatedAt).toISOString();
 
@@ -351,12 +397,14 @@ export default async function ContentItemDetailPage({
         translationStatus={item.translationStatus}
         preferredDesignProvider={item.preferredDesignProvider ?? "MANUAL"}
         contentType={item.contentType}
+        originalCopyTitle={originalCopy.title}
+        originalCopyBody={originalCopy.body}
       />
 
       {publishedPreview ? (
-        <section className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        <section className="app-surface-panel rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-[rgba(88,108,186,0.32)] dark:bg-[rgba(23,31,58,0.78)]">
               <img
                 src={publishedPreview.previewUrl}
                 alt={`${item.title} preview`}
@@ -364,10 +412,10 @@ export default async function ContentItemDetailPage({
               />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
+              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">
                 Published preview
               </p>
-              <p className="mt-2 text-sm text-slate-700">
+              <p className="mt-2 text-sm text-slate-700 dark:text-[#CFD8F7]">
                 A stored visual reference is available for this published item, so the team does not need to go back to the spreadsheet for context.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -375,7 +423,7 @@ export default async function ContentItemDetailPage({
                   href={publishedPreview.referenceUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 dark:border-[rgba(88,108,186,0.3)] dark:text-[#CFD8F7] dark:hover:border-[rgba(122,138,218,0.45)] dark:hover:bg-[rgba(26,34,65,0.82)]"
                 >
                   Open reference
                   <ExternalLink className="h-3.5 w-3.5" />
@@ -393,31 +441,31 @@ export default async function ContentItemDetailPage({
       {/* 2A — Primary action card */}
       {primaryActionKind === "waiting" ? (
         <section
-          className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm"
+          className="app-surface-panel rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
           style={{ borderLeft: '4px solid #0A66C2' }}
         >
           <div className="flex items-start gap-3">
             <Clock className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#0A66C2' }} />
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: '#0A66C2' }}>
-                Waiting
+                {operationalStatus === "WAITING_FOR_COPY" ? "Blocked: Awaiting Copy" : "Waiting"}
               </p>
-              <p className="text-sm font-medium" style={{ color: '#0F172A' }}>
-                {operationalSummary.waitingOn}
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                {operationalStatus === "WAITING_FOR_COPY" ? "Waiting for copy" : operationalSummary.waitingOn}
               </p>
-              <p className="mt-1 text-sm" style={{ color: '#64748B' }}>{operationalSummary.nextStep}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">{operationalSummary.nextStep}</p>
             </div>
           </div>
         </section>
       ) : (
         <section
-          className="rounded-xl border-l-4 border border-slate-200 bg-white px-5 py-5 shadow-lg"
+          className="app-surface-panel rounded-xl border-l-4 px-5 py-5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
           style={{ borderLeftColor: '#E8584A' }}
         >
           <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#E8584A' }}>
             Primary action
           </p>
-          <h2 className="mt-2 text-xl font-semibold tracking-tight" style={{ color: '#0F172A' }}>
+          <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
             {showContinueProcessPrimary ? "Continue Process" : primaryActionLabel[primaryActionKind]}
           </h2>
           <p className="mt-1.5 text-sm leading-6" style={{ color: '#64748B' }}>
@@ -439,7 +487,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Start visual generation
+                  Generate Design
                 </Button>
               </form>
             )}
@@ -452,7 +500,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Refresh visual handoff
+                  Sync Design
                 </Button>
               </form>
             )}
@@ -470,7 +518,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Retry visual generation
+                  Retry Design
                 </Button>
               </form>
             )}
@@ -483,7 +531,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default"
                   style={{ backgroundColor: '#E8584A', color: 'white' }}
                 >
-                  Approve visual result
+                  Approve Design
                 </Button>
               </form>
             )}
@@ -495,7 +543,7 @@ export default async function ContentItemDetailPage({
                   <input type="hidden" name="stage" value={ApprovalStage.PUBLISH} />
                   <input type="hidden" name="decision" value="APPROVED" />
                   <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
-                    Approve — ready to post
+                    Final Review
                   </Button>
                 </form>
                 <form action={recordApprovalActionWithDecision.bind(null, ApprovalDecision.CHANGES_REQUESTED)}>
@@ -521,7 +569,7 @@ export default async function ContentItemDetailPage({
                   className="transition-default font-semibold"
                   style={{ backgroundColor: '#0A66C2', color: 'white' }}
                 >
-                  POST on LI
+                  Post to LinkedIn
                 </Button>
               </form>
             )}
@@ -533,7 +581,7 @@ export default async function ContentItemDetailPage({
                   <input type="hidden" name="stage" value={ApprovalStage.TRANSLATION} />
                   <input type="hidden" name="decision" value="APPROVED" />
                   <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
-                    Approve translation
+                    Review Translation
                   </Button>
                 </form>
                 <form action={recordApprovalActionWithDecision.bind(null, ApprovalDecision.CHANGES_REQUESTED)}>
@@ -563,7 +611,7 @@ export default async function ContentItemDetailPage({
       {/* 2B — Blocker / waiting signal */}
       {operationalSummary.blocker ? (
         <div
-          className="flex items-start gap-3 rounded-xl border border-l-4 bg-white px-4 py-3.5 shadow-sm"
+          className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
           style={{ borderLeftColor: '#F59E0B', borderColor: '#FDE68A' }}
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#D97706' }} />
@@ -577,7 +625,7 @@ export default async function ContentItemDetailPage({
       {/* 2C — Secondary actions */}
       {!operationalSummary.blocker && operationalStatus === "LATE" ? (
         <div
-          className="flex items-start gap-3 rounded-xl border border-l-4 bg-white px-4 py-3.5 shadow-sm"
+          className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
           style={{ borderLeftColor: '#E11D48', borderColor: '#FDA4AF' }}
         >
           <Clock className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#E11D48' }} />
@@ -590,9 +638,13 @@ export default async function ContentItemDetailPage({
         </div>
       ) : null}
 
-      <section id="secondary-actions" className="space-y-4 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm" style={{ animationDelay: '100ms' }}>
+      <section
+        id="secondary-actions"
+        className="app-surface-panel space-y-4 rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
+        style={{ animationDelay: '100ms' }}
+      >
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">
             Add a note or revision
           </p>
           <form action={addWorkflowNoteAction} className="mt-3 space-y-3">
@@ -601,7 +653,7 @@ export default async function ContentItemDetailPage({
               <select
                 name="type"
                 defaultValue="COMMENT"
-                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-400 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100"
               >
                 <option value="COMMENT">Comment</option>
                 <option value="REVISION">Revision</option>
@@ -610,9 +662,9 @@ export default async function ContentItemDetailPage({
             <Textarea
               name="body"
               placeholder="Add a comment or revision note tied to this content item."
-              className="min-h-24 bg-white"
+              className="min-h-24 bg-white dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100"
             />
-            <Button type="submit" variant="outline" className="border-slate-200 transition-default hover:bg-slate-50" style={{ color: '#0F172A' }}>
+            <Button type="submit" variant="outline" className="border-slate-200 transition-default hover:bg-slate-50 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100 dark:hover:bg-[rgba(29,37,68,0.95)]" style={{ color: '#0F172A' }}>
               Add note
             </Button>
           </form>
@@ -620,9 +672,9 @@ export default async function ContentItemDetailPage({
 
         {/* Approval forms — secondary, shown only when available and not already primary */}
         {canRecordTranslationApproval && primaryActionKind !== "translation_approve" && (
-          <div className="border-t border-slate-100 pt-4">
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-              Translation approval
+          <div className="border-t border-slate-100 pt-4 dark:border-[rgba(88,108,186,0.24)]">
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">
+              Review Translation
             </p>
             <form action={recordApprovalAction} className="mt-3 space-y-3">
               <input type="hidden" name="contentItemId" value={item.id} />
@@ -630,18 +682,18 @@ export default async function ContentItemDetailPage({
               <input type="hidden" name="decision" value="APPROVED" />
               <Textarea
                 name="note"
-                placeholder="Optional translation approval note."
-                className="min-h-20 bg-white"
+                placeholder="Optional translation review note."
+                className="min-h-20 bg-white dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100"
               />
               <div className="flex flex-wrap gap-2">
-                <Button type="submit" className="bg-slate-950 text-white hover:bg-slate-800">
-                  Record translation approval
+                <Button type="submit" className="bg-slate-950 text-white hover:bg-slate-800 dark:bg-indigo-500/85 dark:hover:bg-indigo-500">
+                  Review Translation
                 </Button>
                 <Button
                   formAction={recordApprovalActionWithDecision.bind(null, ApprovalDecision.CHANGES_REQUESTED)}
                   type="submit"
                   variant="outline"
-                  className="border-slate-300 text-slate-900 hover:bg-slate-50"
+                  className="border-slate-300 text-slate-900 hover:bg-slate-50 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100 dark:hover:bg-[rgba(29,37,68,0.95)]"
                 >
                   Request changes
                 </Button>
@@ -652,23 +704,23 @@ export default async function ContentItemDetailPage({
 
         {/* Recent notes inline */}
         {item.notes.length > 0 && (
-          <div className="border-t border-slate-100 pt-4 space-y-2.5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
+          <div className="border-t border-slate-100 pt-4 space-y-2.5 dark:border-[rgba(88,108,186,0.24)]">
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">
               Recent notes
             </p>
             {item.notes.slice(0, 3).map((note) => (
               <div
                 key={note.id}
-                className="rounded-xl border border-slate-100 bg-slate-50/70 px-3.5 py-3"
+                className="rounded-xl border border-slate-100 bg-slate-50/70 px-3.5 py-3 dark:border-[rgba(88,108,186,0.24)] dark:bg-[rgba(22,30,58,0.68)]"
               >
-                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400 dark:text-[#8B97B7]">
                   <span className="capitalize">{formatLabel(note.type)}</span>
                   <span>·</span>
                   <span>{note.author.name ?? note.author.email}</span>
                   <span>·</span>
                   <span>{formatDateTime(note.createdAt)}</span>
                 </div>
-                <p className="mt-1.5 text-sm leading-5 text-slate-800">{note.body}</p>
+                <p className="mt-1.5 text-sm leading-5 text-slate-800 dark:text-[#D7DEFA]">{note.body}</p>
               </div>
             ))}
           </div>
@@ -819,14 +871,6 @@ export default async function ContentItemDetailPage({
                   No asset linked yet.
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Content copy */}
-          <div>
-            <SectionHeading>Read-only copy</SectionHeading>
-            <div className="rounded-xl border border-slate-100 px-3 py-3">
-              <p className="text-sm leading-6 text-slate-900 whitespace-pre-wrap">{item.copy}</p>
             </div>
           </div>
 

@@ -197,10 +197,10 @@ function buildApprovalCheckpoint(
   if (isTranslation && !item.translationRequired) {
     return {
       stage,
-      label: "Translation approval",
+      label: "Review Translation",
       status: "NOT_REQUIRED",
-      summary: "No translation approval is needed for this item.",
-      actor: "No translation approver needed",
+      summary: "No translation review is needed for this item.",
+      actor: "No translation reviewer needed",
       note: null,
       occurredAt: null,
       tone: "slate",
@@ -210,12 +210,12 @@ function buildApprovalCheckpoint(
   if (!approval) {
     return {
       stage,
-      label: isTranslation ? "Translation approval" : "Publish approval",
+      label: isTranslation ? "Review Translation" : "Final Review",
       status: "PENDING",
       summary: isTranslation
         ? "A translation decision still needs to be recorded."
-        : "A final publish decision still needs to be recorded.",
-      actor: isTranslation ? "Waiting on translation approver" : "Waiting on publish approver",
+        : "A final review decision still needs to be recorded.",
+      actor: isTranslation ? "Waiting on translation reviewer" : "Waiting on final reviewer",
       note: null,
       occurredAt: null,
       tone: "amber",
@@ -225,11 +225,11 @@ function buildApprovalCheckpoint(
   if (approval.decision === ApprovalDecision.APPROVED) {
     return {
       stage,
-      label: isTranslation ? "Translation approval" : "Publish approval",
+      label: isTranslation ? "Review Translation" : "Final Review",
       status: "APPROVED",
       summary: isTranslation
         ? "The translation checkpoint is approved."
-        : "The publish checkpoint is approved.",
+        : "The final review checkpoint is approved.",
       actor: approval.actor.name ?? approval.actor.email,
       note: approval.note,
       occurredAt: approval.createdAt,
@@ -239,11 +239,11 @@ function buildApprovalCheckpoint(
 
   return {
     stage,
-    label: isTranslation ? "Translation approval" : "Publish approval",
+    label: isTranslation ? "Review Translation" : "Final Review",
     status: "CHANGES_REQUESTED",
     summary: isTranslation
       ? "Translation changes were requested before approval."
-      : "Content changes were requested before publish approval.",
+      : "Content changes were requested before final review.",
     actor: approval.actor.name ?? approval.actor.email,
     note: approval.note,
     occurredAt: approval.createdAt,
@@ -770,21 +770,21 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
 
   if (publishCheckpoint.status === "CHANGES_REQUESTED") {
     return {
-      headline: "Publish approval is blocked on content changes",
-      nextStep: "Update the content and resubmit for publish approval.",
-      afterThisStep: "Once publish approval is cleared, the design path can continue.",
+      headline: "Final review is blocked on content changes",
+      nextStep: "Update the content and resubmit for final review.",
+      afterThisStep: "Once final review is cleared, the workflow can continue.",
       waitingOn: "Internal editor",
-      blocker: publishCheckpoint.note ?? "Publish approval feedback still needs to be addressed.",
-      readinessSignal: "The item cannot move downstream until the publish checkpoint is cleared.",
+      blocker: publishCheckpoint.note ?? "Final review feedback still needs to be addressed.",
+      readinessSignal: "The item cannot move downstream until final review is cleared.",
       tone: "amber",
     };
   }
 
   if (translationCheckpoint.status === "CHANGES_REQUESTED") {
     return {
-      headline: "Translation approval is blocked on changes",
+      headline: "Translation review is blocked on changes",
       nextStep: "Revise the Portuguese translation and request approval again.",
-      afterThisStep: "Once translation approval is cleared, the localized path can continue.",
+      afterThisStep: "Once translation review is cleared, the localized path can continue.",
       waitingOn: "Translation editor",
       blocker: translationCheckpoint.note ?? "Translation feedback still needs to be addressed.",
       readinessSignal: "The localized version is still blocked.",
@@ -799,7 +799,7 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
       afterThisStep: "The item will move into an active design handoff until the result is ready or failed.",
       waitingOn: "Internal operator",
       blocker: null,
-      readinessSignal: "Publish approval is in place and the design path can begin.",
+      readinessSignal: "The review gate is cleared and the design path can begin.",
       tone: "sky",
     };
   }
@@ -807,8 +807,8 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
   if (item.currentStatus === ContentStatus.IMPORTED || item.currentStatus === ContentStatus.IN_REVIEW) {
     return {
       headline: "Editorial review is the next checkpoint",
-      nextStep: "Review the imported planning data, refine the content, and request publish approval.",
-      afterThisStep: "Once publish approval is recorded, the design path becomes available.",
+      nextStep: "Review the imported planning data, refine the content, and move it toward design readiness.",
+      afterThisStep: "Once the review gate is cleared, the design path becomes available.",
       waitingOn: "Internal editor",
       blocker: null,
       readinessSignal: "The item is still in the review part of the pipeline.",
@@ -820,7 +820,7 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
     return {
       headline: "Translation decision is still pending",
       nextStep: "Record the translation approval decision or request translation changes.",
-      afterThisStep: "Once translation approval is recorded, the localized path can move forward.",
+      afterThisStep: "Once translation review is recorded, the localized path can move forward.",
       waitingOn: "Translation approver",
       blocker: translationCheckpoint.note,
       readinessSignal: "The localized path is not cleared yet.",
@@ -835,7 +835,7 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
       afterThisStep: "The localized content can now move into the next internal handoff.",
       waitingOn: "Internal operator",
       blocker: null,
-      readinessSignal: "Translation approval is recorded and visible below.",
+      readinessSignal: "Translation review is recorded and visible below.",
       tone: "emerald",
     };
   }
@@ -924,7 +924,7 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
     return {
       headline: "Ready for final review",
       nextStep: "Review the complete package — copy, design, and translation — then approve for posting.",
-      afterThisStep: "Once approved, the item is ready to POST on LinkedIn.",
+      afterThisStep: "Once approved, the item is ready to post to LinkedIn.",
       waitingOn: "Internal approver",
       blocker: null,
       readinessSignal: "All upstream steps are complete. Final review is the last gate.",
@@ -934,8 +934,8 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
 
   if (item.currentStatus === ContentStatus.READY_TO_POST) {
     return {
-      headline: "Ready to POST on LinkedIn",
-      nextStep: "Execute the final post on LinkedIn.",
+      headline: "Ready to Post to LinkedIn",
+      nextStep: "Post this item to LinkedIn.",
       afterThisStep: "After posting, this item will be marked as POSTED and the workflow is complete.",
       waitingOn: "Internal operator",
       blocker: null,
@@ -961,8 +961,8 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
 
   if (item.currentStatus === ContentStatus.READY_TO_PUBLISH) {
     return {
-      headline: "Ready to POST on LinkedIn",
-      nextStep: "Execute the final post on LinkedIn.",
+      headline: "Ready to Post to LinkedIn",
+      nextStep: "Post this item to LinkedIn.",
       afterThisStep: "After posting, this item will be marked as complete.",
       waitingOn: "Internal operator",
       blocker: null,
@@ -1193,7 +1193,7 @@ export function getApprovalSummary(item: QueueContentItem) {
   }
 
   if (item.currentStatus === ContentStatus.TRANSLATION_PENDING) {
-    return item.translationRequired ? "Translation approval pending" : "Approval pending";
+    return item.translationRequired ? "Translation review pending" : "Approval pending";
   }
 
   if (item.currentStatus === ContentStatus.TRANSLATION_APPROVED) {
@@ -1204,7 +1204,7 @@ export function getApprovalSummary(item: QueueContentItem) {
     item.currentStatus === ContentStatus.READY_TO_PUBLISH ||
     item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
   ) {
-    return "Publish approval cleared";
+    return "Final review cleared";
   }
 
   if (
@@ -1214,7 +1214,7 @@ export function getApprovalSummary(item: QueueContentItem) {
     item.currentStatus === ContentStatus.DESIGN_FAILED ||
     item.currentStatus === ContentStatus.DESIGN_READY
   ) {
-    return "Publish approval pending";
+    return "Final review pending";
   }
 
   return item.translationRequired ? "Translation still in workflow" : "Review still in workflow";
@@ -1254,19 +1254,19 @@ export function getShortActionPhrase(item: QueueContentItem): string {
   ) {
     switch (operationalStatus) {
       case "WAITING_FOR_COPY":
-        return "Awaiting Copy";
+        return "Await Copy";
       case "LATE":
         return "Continue";
       case "READY_FOR_DESIGN":
         return "Send to Design";
       case "PUBLISHED":
-        return "Complete";
+        return "POSTED";
     }
   }
 
   switch (item.currentStatus) {
     case ContentStatus.WAITING_FOR_COPY:
-      return "Awaiting Copy";
+      return "Await Copy";
     case ContentStatus.READY_FOR_DESIGN:
       return "Start Design";
     case ContentStatus.IN_DESIGN:
@@ -1278,7 +1278,7 @@ export function getShortActionPhrase(item: QueueContentItem): string {
     case ContentStatus.READY_FOR_FINAL_REVIEW:
       return "Final Review";
     case ContentStatus.READY_TO_POST:
-      return "POST on LI";
+      return "Post to LinkedIn";
     case ContentStatus.POSTED:
       return "Complete";
     case ContentStatus.IMPORTED:
@@ -1306,7 +1306,7 @@ export function getShortActionPhrase(item: QueueContentItem): string {
       return "Final Review";
     case ContentStatus.READY_TO_PUBLISH:
     case ContentStatus.READY_TO_POST:
-      return "POST on LI";
+      return "Post to LinkedIn";
     case ContentStatus.PUBLISHED_MANUALLY:
     case ContentStatus.POSTED:
       return "Complete";
