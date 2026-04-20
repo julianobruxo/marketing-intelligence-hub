@@ -95,17 +95,17 @@ export function WorkflowStepper(props: WorkflowStepperProps) {
           <span key={step.key} className="flex items-center gap-2">
             {index > 0 ? <ChevronRight className="h-3 w-3 text-slate-300 dark:text-[#6F7FA3]" /> : null}
             {state === "complete" ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] dark:border-emerald-800/50 dark:bg-[rgba(8,32,18,0.8)] dark:text-emerald-300">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] dark:border-emerald-500/50 dark:bg-emerald-900/40 dark:text-emerald-200">
                 <Check className="h-3 w-3" />
                 {step.label}
               </span>
             ) : state === "current" ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-900 bg-slate-950 px-2.5 py-1 text-xs font-semibold text-white shadow-[0_18px_36px_-28px_rgba(15,23,42,0.8)] dark:border-indigo-400/60 dark:bg-indigo-500/20 dark:text-indigo-200 dark:shadow-[0_18px_36px_-28px_rgba(99,102,241,0.5)]">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-900 bg-slate-950 px-2.5 py-1 text-xs font-semibold text-white shadow-[0_18px_36px_-28px_rgba(15,23,42,0.8)] dark:border-indigo-400 dark:bg-indigo-600 dark:text-white dark:shadow-[0_18px_36px_-28px_rgba(99,102,241,0.5)]">
                 <Circle className="h-3 w-3 fill-current" />
                 {step.label}
               </span>
             ) : (
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-400 dark:border-[rgba(88,108,186,0.34)] dark:bg-[rgba(22,30,58,0.84)] dark:text-[#7F90B3]">
+              <span className={cn("inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium dark:border-[rgba(88,108,186,0.5)] dark:bg-[rgba(15,20,40,0.6)]", step.key === "post" ? "border-slate-300 bg-slate-50 text-slate-500 font-semibold dark:border-[rgba(88,108,186,0.7)] dark:text-white" : "border-slate-200 bg-white text-slate-400 dark:text-[#AABCE0]")}>
                 {step.label}
               </span>
             )}

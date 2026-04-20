@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { ArrowLeft, ChevronDown, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { SemanticWorkflowDecision } from "@/modules/content-catalog/application/content-workflow-view-model";
 import { StatusBadge } from "@/shared/ui/status-badge";
 import { WorkflowStepper } from "@/shared/ui/workflow-stepper";
 import { formatOperationalLabel, type OperationalTone } from "@/shared/ui/operational-status";
@@ -60,9 +61,10 @@ export type ItemHeaderProps = {
   primaryActionKind: string;
   updatedAt: string;
   sourceWorksheetName: string | null;
-  sourceRowRef: string | null;
-  importMode: string | null;
-  importStatus: string | null;
+  sourceSpreadsheetName: string | null;
+  dateCreated: string;
+  datePosted: string | null;
+  isDesignDone: boolean;
   templateRouteLabel: string | null;
   translationRequired: boolean;
   translationStatus: string;
@@ -70,6 +72,8 @@ export type ItemHeaderProps = {
   contentType: string;
   originalCopyTitle: string | null;
   originalCopyBody: string | null;
+  copyIsFallbackLanguage: boolean;
+  semanticDecision: SemanticWorkflowDecision | null;
 };
 
 function ownerLabel(profile: string): string {
@@ -103,11 +107,26 @@ function designProviderLabel(provider: string): string {
 function getStatusBadge(
   currentStatus: string,
   operationalStatus: string | null,
+  semanticDecision: SemanticWorkflowDecision | null,
 ): { label: string; color: BadgeColor } {
+  if (semanticDecision) {
+    return {
+      label: semanticDecision.visibleStatusLabel,
+      color:
+        semanticDecision.baseVisualFamily === "green"
+          ? "emerald"
+          : semanticDecision.baseVisualFamily === "amber"
+            ? "amber"
+            : semanticDecision.baseVisualFamily === "lavender"
+              ? "violet"
+              : "slate",
+    };
+  }
+
   switch (currentStatus) {
     case "POSTED":
     case "PUBLISHED_MANUALLY":
-      return { label: "POSTED", color: "slate" };
+      return { label: "POSTED", color: "emerald" };
     case "READY_TO_POST":
     case "READY_TO_PUBLISH":
       return { label: "Post to LinkedIn", color: "blue" };
@@ -117,7 +136,7 @@ function getStatusBadge(
       return { label: "Waiting for Copy", color: "amber" };
     case "READY_FOR_DESIGN":
     case "CONTENT_APPROVED":
-      return { label: "Generate Design", color: "emerald" };
+      return { label: "Generate Design", color: "violet" };
     case "IN_DESIGN":
     case "DESIGN_REQUESTED":
     case "DESIGN_IN_PROGRESS":
@@ -142,9 +161,9 @@ function getStatusBadge(
     case "WAITING_FOR_COPY":
       return { label: "Waiting for Copy", color: "amber" };
     case "READY_FOR_DESIGN":
-      return { label: "Generate Design", color: "emerald" };
+      return { label: "Generate Design", color: "violet" };
     case "PUBLISHED":
-      return { label: "POSTED", color: "slate" };
+      return { label: "POSTED", color: "emerald" };
     default:
       return { label: formatOperationalLabel(currentStatus), color: "slate" };
   }
@@ -202,7 +221,15 @@ function getPipelineStep(currentStatus: string): PipelineStep {
   return "copy";
 }
 
-function getNextAction(primaryActionKind: string, operationalStatus: string | null): string {
+function getNextAction(
+  primaryActionKind: string,
+  operationalStatus: string | null,
+  semanticDecision: SemanticWorkflowDecision | null,
+): string {
+  if (semanticDecision) {
+    return semanticDecision.nextActionLabel;
+  }
+
   if (primaryActionKind === "review" || primaryActionKind === "waiting") {
     if (operationalStatus === "WAITING_FOR_COPY") return "Await Copy";
     if (operationalStatus === "READY_FOR_DESIGN") return "Generate Design";
@@ -227,16 +254,16 @@ function formatRelativeTime(date: Date): string {
 function getHeaderShellClasses(tone: BadgeColor) {
   switch (tone) {
     case "rose":
-      return "border-rose-200/80 bg-[linear-gradient(180deg,rgba(255,250,251,0.98),rgba(255,241,242,0.95))] dark:border-[rgba(225,29,72,0.18)] dark:bg-[linear-gradient(180deg,rgba(45,8,15,0.99),rgba(55,10,18,0.97))]";
+      return "border-rose-200/80 bg-[linear-gradient(180deg,rgba(255,250,251,0.98),rgba(255,241,242,0.95))] dark:border-[rgba(225,29,72,0.18)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
     case "amber":
-      return "border-amber-200/80 bg-[linear-gradient(180deg,rgba(255,251,235,0.98),rgba(254,243,199,0.9))] dark:border-[rgba(245,158,11,0.15)] dark:bg-[linear-gradient(180deg,rgba(42,28,5,0.99),rgba(52,35,5,0.97))]";
+      return "border-amber-200/80 bg-[linear-gradient(180deg,rgba(255,251,235,0.98),rgba(254,243,199,0.9))] dark:border-[rgba(245,158,11,0.15)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
     case "emerald":
-      return "border-emerald-200/80 bg-[linear-gradient(180deg,rgba(247,254,250,0.98),rgba(236,253,245,0.95))] dark:border-[rgba(52,211,153,0.15)] dark:bg-[linear-gradient(180deg,rgba(8,28,18,0.99),rgba(10,38,24,0.97))]";
+      return "border-emerald-200/80 bg-[linear-gradient(180deg,rgba(247,254,250,0.98),rgba(236,253,245,0.95))] dark:border-[rgba(52,211,153,0.15)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
     case "blue":
-      return "border-sky-200/80 bg-[linear-gradient(180deg,rgba(247,252,255,0.98),rgba(240,249,255,0.95))] dark:border-[rgba(56,189,248,0.12)] dark:bg-[linear-gradient(180deg,rgba(8,18,42,0.99),rgba(8,24,55,0.97))]";
+      return "border-sky-200/80 bg-[linear-gradient(180deg,rgba(247,252,255,0.98),rgba(240,249,255,0.95))] dark:border-[rgba(56,189,248,0.12)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
     case "slate":
     default:
-      return "border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] dark:border-[rgba(99,102,241,0.15)] dark:bg-[linear-gradient(180deg,rgba(13,18,38,0.99),rgba(10,14,30,0.97))]";
+      return "border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] dark:border-[rgba(99,102,241,0.15)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
   }
 }
 
@@ -253,6 +280,12 @@ function SeparatorDot() {
   return <span className="h-1 w-1 rounded-full bg-slate-300" aria-hidden="true" />;
 }
 
+function formatIsoDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 export function ItemHeader({
   title,
   profile,
@@ -263,9 +296,10 @@ export function ItemHeader({
   primaryActionKind,
   updatedAt,
   sourceWorksheetName,
-  sourceRowRef,
-  importMode,
-  importStatus,
+  sourceSpreadsheetName,
+  dateCreated,
+  datePosted,
+  isDesignDone,
   templateRouteLabel,
   translationRequired,
   translationStatus,
@@ -273,17 +307,28 @@ export function ItemHeader({
   contentType,
   originalCopyTitle,
   originalCopyBody,
+  copyIsFallbackLanguage,
+  semanticDecision,
 }: ItemHeaderProps) {
   const [expanded, setExpanded] = useState(false);
 
   const owner = ownerLabel(profile);
-  const statusBadge = getStatusBadge(currentStatus, operationalStatus);
-  const deadlineBadge = getDeadlineBadge(contentDeadline, operationalStatus === "LATE");
-  const pipelineStep = getPipelineStep(currentStatus);
-  const nextAction = getNextAction(primaryActionKind, operationalStatus);
+  const statusBadge = getStatusBadge(currentStatus, operationalStatus, semanticDecision);
+  const deadlineBadge = getDeadlineBadge(
+    contentDeadline,
+    semanticDecision?.overdueOverlay ?? operationalStatus === "LATE",
+  );
+  const pipelineStep = semanticDecision
+    ? semanticDecision.statusKey === "PUBLISHED"
+      ? "post"
+      : semanticDecision.statusKey === "READY_FOR_DESIGN"
+        ? "design"
+        : "copy"
+    : getPipelineStep(currentStatus);
+  const nextAction = getNextAction(primaryActionKind, operationalStatus, semanticDecision);
   const freshness = formatRelativeTime(new Date(updatedAt));
   const plannedLabel = plannedDate?.trim() ? `Planned ${plannedDate.trim()}` : null;
-  const hasMetadata = Boolean(sourceWorksheetName || sourceRowRef || importMode || templateRouteLabel);
+  const hasMetadata = Boolean(sourceWorksheetName || sourceSpreadsheetName || dateCreated || owner || contentType);
   const hasCopyReference = Boolean(originalCopyTitle || originalCopyBody);
   const hasDetails = hasMetadata || hasCopyReference;
 
@@ -377,7 +422,7 @@ export function ItemHeader({
                 <button
                   type="button"
                   onClick={() => setExpanded((current) => !current)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 transition-default hover:border-slate-300 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0A66C2] focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 transition-default hover:border-slate-300 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0A66C2] focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-indigo-400/40 dark:bg-[rgba(26,34,70,0.8)] dark:text-indigo-200 dark:hover:border-indigo-400/70 dark:hover:bg-indigo-900/50 dark:hover:text-white"
                 >
                   <span>{expanded ? "Hide details" : "Open details"}</span>
                   <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")} />
@@ -399,19 +444,16 @@ export function ItemHeader({
           {hasMetadata ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {sourceWorksheetName ? <MetaField label="Sheet" value={sourceWorksheetName} /> : null}
-              {sourceRowRef ? <MetaField label="Row" value={sourceRowRef} /> : null}
-              {importMode && importStatus ? (
-                <MetaField label="Import" value={`${importMode} / ${importStatus}`} />
-              ) : null}
-              {templateRouteLabel && templateRouteLabel !== "No active mapping" ? (
-                <MetaField label="Template" value={templateRouteLabel} />
-              ) : null}
+              {sourceSpreadsheetName ? <MetaField label="Spreadsheet" value={sourceSpreadsheetName} /> : null}
+              <MetaField label="Date created" value={formatIsoDate(dateCreated)} />
+              {contentDeadline ? <MetaField label="Original date for posting" value={contentDeadline} /> : null}
+              {datePosted ? <MetaField label="Date posted" value={formatIsoDate(datePosted)} /> : null}
               <MetaField label="Owner" value={owner} />
               <MetaField
                 label="Type"
                 value={contentType === "STATIC_POST" ? "Static post" : "Carousel"}
               />
-              <MetaField label="Design" value={designProviderLabel(preferredDesignProvider)} />
+              <MetaField label="Design" value={isDesignDone ? "Done" : "Not yet"} />
               <MetaField
                 label="Translation"
                 value={
@@ -435,6 +477,13 @@ export function ItemHeader({
 
             {originalCopyBody ? (
               <div className="rounded-[24px] border border-slate-200/80 bg-white px-4 py-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.24)] dark:border-[rgba(95,114,186,0.34)] dark:bg-[rgba(16,23,47,0.84)] dark:shadow-[0_18px_40px_-30px_rgba(35,45,98,0.5)]">
+                {copyIsFallbackLanguage ? (
+                  <p
+                    className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-400"
+                  >
+                    No English copy found — showing original language copy only.
+                  </p>
+                ) : null}
                 {originalCopyTitle ? (
                   <p
                     data-testid="original-copy-title"

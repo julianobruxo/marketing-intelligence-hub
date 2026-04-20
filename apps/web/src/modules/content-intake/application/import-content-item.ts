@@ -182,19 +182,37 @@ export async function importContentItem(rawPayload: unknown) {
   }
 
   if (existingReceipt) {
-    logEvent("info", "[TRACE_IMPORT_QUEUE][INGEST] duplicate-receipt", {
+    // Only treat as a valid duplicate if the receipt links to a live canonical record.
+    // A receipt with contentItemId === null or pointing to a deleted contentItem is orphaned
+    // (e.g. after queue/clear) and must not block canonical creation.
+    const linkedRecordExists =
+      existingReceipt.contentItemId !== null &&
+      (await prisma.contentItem.count({ where: { id: existingReceipt.contentItemId } })) > 0;
+
+    if (linkedRecordExists) {
+      logEvent("info", "[TRACE_IMPORT_QUEUE][INGEST] duplicate-receipt", {
+        idempotencyKey: payload.idempotencyKey,
+        receiptId: existingReceipt.id,
+        contentItemId: existingReceipt.contentItemId,
+        status: existingReceipt.status,
+      });
+      return {
+        mode: payload.mode,
+        duplicate: true,
+        receiptId: existingReceipt.id,
+        contentItemId: existingReceipt.contentItemId,
+        status: existingReceipt.status,
+      };
+    }
+
+    logEvent("info", "[TRACE_IMPORT_QUEUE][INGEST] orphaned-receipt", {
       idempotencyKey: payload.idempotencyKey,
       receiptId: existingReceipt.id,
       contentItemId: existingReceipt.contentItemId,
       status: existingReceipt.status,
+      reason: existingReceipt.contentItemId === null ? "null contentItemId" : "linked record not found",
     });
-    return {
-      mode: payload.mode,
-      duplicate: true,
-      receiptId: existingReceipt.id,
-      contentItemId: existingReceipt.contentItemId,
-      status: existingReceipt.status,
-    };
+    // Fall through to canonical creation. The orphaned receipt will be repaired in the transaction.
   }
 
   if (payload.normalization.rowQualification.disposition !== "QUALIFIED") {
@@ -368,22 +386,35 @@ export async function importContentItem(rawPayload: unknown) {
       });
     }
 
-    const receipt = await tx.importReceipt.create({
-      data: {
-        idempotencyKey: payload.idempotencyKey,
-        mode: payload.mode,
-        orchestrator: payload.orchestrator,
-        upstreamSystem: UpstreamSystem.GOOGLE_SHEETS,
-        sheetProfileKey: payload.normalization.sheetProfileKey,
-        sheetProfileVersion: payload.normalization.sheetProfileVersion,
-        status: ImportReceiptStatus.PROCESSED,
-        payloadVersion: payload.version,
-        fingerprint,
-        payload: payloadJson,
-        contentItemId: contentItem.id,
-        processedAt: new Date(),
-      },
-    });
+    // If we fell through an orphaned receipt, repair it in-place to avoid a unique constraint
+    // violation on (idempotencyKey, mode). Otherwise create a fresh receipt.
+    const receipt = existingReceipt
+      ? await tx.importReceipt.update({
+          where: { id: existingReceipt.id },
+          data: {
+            status: ImportReceiptStatus.PROCESSED,
+            fingerprint,
+            payload: payloadJson,
+            contentItemId: contentItem.id,
+            processedAt: new Date(),
+          },
+        })
+      : await tx.importReceipt.create({
+          data: {
+            idempotencyKey: payload.idempotencyKey,
+            mode: payload.mode,
+            orchestrator: payload.orchestrator,
+            upstreamSystem: UpstreamSystem.GOOGLE_SHEETS,
+            sheetProfileKey: payload.normalization.sheetProfileKey,
+            sheetProfileVersion: payload.normalization.sheetProfileVersion,
+            status: ImportReceiptStatus.PROCESSED,
+            payloadVersion: payload.version,
+            fingerprint,
+            payload: payloadJson,
+            contentItemId: contentItem.id,
+            processedAt: new Date(),
+          },
+        });
 
     return {
       mode: payload.mode,

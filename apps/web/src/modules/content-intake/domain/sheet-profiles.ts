@@ -32,6 +32,7 @@ export const canonicalPlanningFieldSchema = z.enum([
   "publishedPostUrl",
   "outreachAccount",
   "outreachCopy",
+  "ideaOrBrief",
 ]);
 
 export const titleFallbackFieldSchema = z.enum([
@@ -590,7 +591,8 @@ export const driveSmmPlanImportProfile = sheetProfileSchema.parse({
   fieldMappings: [
     { field: "plannedDate", headerAliases: ["Date", "Planned date"], required: true },
     { field: "platformLabel", headerAliases: ["Platform", "Channel", "Account", "Person"] },
-    { field: "campaignLabel", headerAliases: ["Campaign", "Title", "Post title", "Topic", "Idea", "Theme"] },
+    { field: "campaignLabel", headerAliases: ["Campaign", "Title", "Post title", "Headline"] },
+    { field: "ideaOrBrief", headerAliases: ["Topic", "Idea", "Theme", "Briefing", "Instructions", "Notes", "Notes for copywriter"] },
     {
       field: "copyEnglish",
       headerAliases: [

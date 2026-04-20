@@ -74,10 +74,12 @@ export type GoogleSheetsParsedRow = {
     plannedDate?: string;
     platformLabel?: string;
     campaignLabel?: string;
+    ideaOrBrief?: string;
     copyEnglish: string;
     copyPortuguese?: string;
     sourceAssetLink?: string;
     contentDeadline?: string;
+    copyLanguageIsFallback?: boolean;
   };
   sourceMetadata: {
     publishedFlag?: string | boolean;

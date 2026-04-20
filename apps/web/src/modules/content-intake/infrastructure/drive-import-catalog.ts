@@ -191,6 +191,13 @@ function matchesSourceGroupToken(value: string): DriveSourceGroup | null {
 }
 
 function inferSourceGroupFromPath(pathSegments: string[], spreadsheetName: string): DriveSourceGroup {
+  // Spreadsheet name is the most specific identifier — check it first so that a file
+  // named "Yann Kronberg SMM Plan" inside a "Sean Lally" folder is still attributed to Yann.
+  const nameGroup = inferSourceGroupFromSpreadsheetName(spreadsheetName);
+  if (nameGroup !== "Operations") {
+    return nameGroup;
+  }
+
   const segmentsToCheck = [...pathSegments].slice(1).reverse();
   for (const segment of segmentsToCheck) {
     const match = matchesSourceGroupToken(segment);
@@ -199,7 +206,7 @@ function inferSourceGroupFromPath(pathSegments: string[], spreadsheetName: strin
     }
   }
 
-  return inferSourceGroupFromSpreadsheetName(spreadsheetName);
+  return "Operations";
 }
 
 function inferSourceGroupFromSpreadsheetName(spreadsheetName: string): DriveSourceGroup {

@@ -44,7 +44,6 @@ export async function getRequestIdentity(): Promise<UserSession | null> {
 
   if (
     process.env.NODE_ENV !== "production" &&
-    !process.env.GOOGLE_CLIENT_ID &&
     env.DEV_AUTH_EMAIL &&
     isAuthorizedDomain(env.DEV_AUTH_EMAIL)
   ) {

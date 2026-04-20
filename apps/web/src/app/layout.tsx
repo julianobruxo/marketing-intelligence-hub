@@ -20,9 +20,6 @@ export const metadata: Metadata = {
   description: "Internal content workflow platform for Pipeline #1.",
 };
 
-// Prevents flash of unstyled content on dark mode load — runs before React hydrates.
-const themeScript = `(function(){try{var t=localStorage.getItem('mih-theme');if(t==='dark')document.documentElement.classList.add('dark');}catch(e){}})();`;
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -31,11 +28,16 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <head>
-        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: required for FOUC prevention */}
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        {/* Blocking script prevents dark-mode FOUC — runs before first paint */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('mih-theme');if(t==='dark')document.documentElement.classList.add('dark');}catch(e){}})();`,
+          }}
+        />
       </head>
       <body className="min-h-full flex flex-col" style={{ backgroundColor: "var(--page-bg)", color: "var(--foreground)" }}>
         <ThemeProvider>

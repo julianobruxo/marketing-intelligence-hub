@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bell, ChevronDown, Search, Settings } from "lucide-react";
+import { Bell, ChevronDown, Search, Settings, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { UserSession } from "@/modules/auth/domain/session";
+import Link from "next/link";
 
 function getInitials(name?: string, email?: string): string {
   if (name) {
@@ -89,16 +90,24 @@ export function UserMenu({ session }: { session: UserSession }) {
             ) : null}
           </div>
 
-          <button
+          <Link
+            href="/settings"
             className="mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-600 transition-default hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-[rgba(99,102,241,0.08)]"
-            disabled
+            onClick={() => setOpen(false)}
           >
             <Settings className="h-4 w-4" />
             Settings
-            <span className="ml-auto rounded-full border border-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:border-slate-700 dark:text-slate-500">
-              soon
-            </span>
-          </button>
+          </Link>
+          
+          <form action="/api/auth/logout" method="POST">
+            <button
+              type="submit"
+              className="mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-red-600 transition-default hover:bg-red-50 dark:text-red-400 dark:hover:bg-[rgba(239,68,68,0.08)]"
+            >
+              <LogOut className="h-4 w-4" />
+              Logout
+            </button>
+          </form>
         </div>
       ) : null}
     </div>

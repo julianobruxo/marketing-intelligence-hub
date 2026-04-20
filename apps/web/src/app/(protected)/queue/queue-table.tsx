@@ -6,7 +6,10 @@ import { ArrowUpRight, EyeOff, Image as ImageIcon } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { getPublishedPreview } from "@/modules/content-catalog/application/content-preview";
-import { getShortActionPhrase } from "@/modules/content-catalog/application/content-workflow-view-model";
+import {
+  getSemanticWorkflowDecision,
+  getShortActionPhrase,
+} from "@/modules/content-catalog/application/content-workflow-view-model";
 import type {
   QueueLane,
   QueueLaneSection,
@@ -55,8 +58,8 @@ const LANE_TAB_META: Record<
     idleClass:
       "border-rose-200/80 bg-[linear-gradient(180deg,rgba(255,245,247,0.98),rgba(255,228,236,0.94))] text-rose-700 hover:border-rose-300 hover:bg-[linear-gradient(180deg,rgba(255,241,242,1),rgba(255,228,230,0.96))] dark:border-[rgba(225,29,72,0.2)] dark:bg-[linear-gradient(180deg,rgba(45,8,18,0.95),rgba(55,10,22,0.92))] dark:text-rose-300 dark:hover:border-[rgba(225,29,72,0.32)] dark:hover:bg-[linear-gradient(180deg,rgba(50,8,20,0.98),rgba(62,10,25,0.96))]",
     activeClass:
-      "border-rose-500/20 bg-[linear-gradient(135deg,rgba(225,29,72,0.97),rgba(244,63,94,0.94))] text-white shadow-[0_18px_42px_-28px_rgba(225,29,72,0.82)]",
-    countClass: "bg-white/18 text-white",
+      "border-rose-500/20 bg-[linear-gradient(135deg,rgba(225,29,72,0.97),rgba(244,63,94,0.94))] text-rose-50 shadow-[0_18px_42px_-28px_rgba(225,29,72,0.82)]",
+    countClass: "bg-white/18 text-rose-50",
   },
   BLOCKED: {
     label: "Blocked",
@@ -82,8 +85,8 @@ const LANE_TAB_META: Record<
     idleClass:
       "border-emerald-200/85 bg-[linear-gradient(180deg,rgba(240,253,244,0.98),rgba(220,252,231,0.9))] text-emerald-800 hover:border-emerald-300 hover:bg-[linear-gradient(180deg,rgba(236,253,245,1),rgba(187,247,208,0.9))] dark:border-[rgba(52,211,153,0.15)] dark:bg-[linear-gradient(180deg,rgba(8,28,18,0.95),rgba(8,35,20,0.92))] dark:text-emerald-300 dark:hover:border-[rgba(52,211,153,0.25)] dark:hover:bg-[linear-gradient(180deg,rgba(8,32,20,0.98),rgba(8,42,24,0.96))]",
     activeClass:
-      "border-emerald-300/30 bg-[linear-gradient(135deg,rgba(16,185,129,0.94),rgba(34,197,94,0.9))] text-white shadow-[0_18px_38px_-30px_rgba(34,197,94,0.45)]",
-    countClass: "bg-white/22 text-white",
+      "border-lime-300/30 bg-[linear-gradient(135deg,rgba(132,204,22,0.94),rgba(163,230,53,0.9))] text-white shadow-[0_18px_38px_-30px_rgba(132,204,22,0.45)]",
+    countClass: "bg-black/15 text-white",
   },
 };
 
@@ -191,6 +194,15 @@ function sortItems(items: DecoratedItem[]): DecoratedItem[] {
   });
 }
 
+function getSpreadsheetName(item: DecoratedItem): string | null {
+  const snapshot = readRecord(item.planningSnapshot);
+  const source = readRecord(snapshot?.source);
+  const name = typeof source?.spreadsheetName === "string" && source.spreadsheetName.trim().length > 0
+    ? source.spreadsheetName.trim()
+    : null;
+  return name;
+}
+
 function getSourceLabel(item: DecoratedItem): string {
   const sourceLink = item.sourceLinks[0];
 
@@ -198,8 +210,8 @@ function getSourceLabel(item: DecoratedItem): string {
     return "Drive source unavailable";
   }
 
-  const rowLabel = sourceLink.rowNumber ? `Row ${sourceLink.rowNumber}` : sourceLink.rowId;
-  return `${sourceLink.worksheetName} / ${rowLabel}`;
+  const spreadsheetName = getSpreadsheetName(item);
+  return spreadsheetName ?? sourceLink.worksheetName ?? "Drive source";
 }
 
 function getOperationalStatusLabel(item: DecoratedItem) {
@@ -207,6 +219,11 @@ function getOperationalStatusLabel(item: DecoratedItem) {
 }
 
 function getQueueActionLabel(item: DecoratedItem) {
+  const semanticDecision = getSemanticWorkflowDecision(item);
+  if (semanticDecision) {
+    return semanticDecision.nextActionLabel;
+  }
+
   const base = getShortActionPhrase(item);
 
   switch (base) {
@@ -226,6 +243,11 @@ function getQueueActionLabel(item: DecoratedItem) {
 }
 
 function isPublishedItem(item: DecoratedItem) {
+  const semanticDecision = getSemanticWorkflowDecision(item);
+  if (semanticDecision) {
+    return semanticDecision.baseVisualFamily === "green";
+  }
+
   const operationalStatus = getOperationalStatusLabel(item);
   return (
     operationalStatus === "PUBLISHED" ||
@@ -234,13 +256,29 @@ function isPublishedItem(item: DecoratedItem) {
   );
 }
 
-function isQuietRow(item: DecoratedItem) {
+function isQuietRow(
+  item: DecoratedItem,
+  semanticDecision: ReturnType<typeof getSemanticWorkflowDecision>,
+) {
+  if (semanticDecision) {
+    return semanticDecision.baseVisualFamily === "green";
+  }
+
   return item.lane === "READY" || isPublishedItem(item);
 }
 
-function isAwaitingDesignRow(item: DecoratedItem, nextAction: string, primaryStatus: string) {
+function isAwaitingDesignRow(
+  item: DecoratedItem,
+  semanticDecision: ReturnType<typeof getSemanticWorkflowDecision>,
+  nextAction: string,
+  primaryStatus: string,
+) {
+  if (semanticDecision) {
+    return semanticDecision.baseVisualFamily === "lavender";
+  }
+
   return (
-    !isQuietRow(item) &&
+    !isQuietRow(item, semanticDecision) &&
     (nextAction === "Generate Design" ||
       primaryStatus === "READY_FOR_DESIGN" ||
       item.currentStatus === "CONTENT_APPROVED")
@@ -276,46 +314,46 @@ function getNextActionClasses(item: DecoratedItem, awaitingDesign: boolean) {
   }
 
   if (item.lane === "NEEDS_ACTION") {
-    return "border-orange-200 bg-[linear-gradient(180deg,rgba(255,247,237,1),rgba(254,215,170,0.98))] text-orange-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(249,115,22,0.3)] dark:bg-[linear-gradient(180deg,rgba(48,22,5,1),rgba(58,28,5,0.98))] dark:text-orange-300";
+    return "border-orange-200 bg-[linear-gradient(180deg,rgba(255,247,237,1),rgba(254,215,170,0.98))] text-orange-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(249,115,22,0.4)] dark:bg-[linear-gradient(180deg,rgba(234,88,12,0.9),rgba(194,65,12,0.8))] dark:text-orange-50";
   }
 
   if (item.lane === "FAILED") {
-    return "border-rose-200 bg-[linear-gradient(180deg,rgba(255,241,242,1),rgba(255,228,230,0.98))] text-rose-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(225,29,72,0.3)] dark:bg-[linear-gradient(180deg,rgba(48,8,18,1),rgba(58,10,22,0.98))] dark:text-rose-300";
+    return "border-rose-200 bg-[linear-gradient(180deg,rgba(255,241,242,1),rgba(255,228,230,0.98))] text-rose-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(225,29,72,0.5)] dark:bg-[linear-gradient(180deg,rgba(225,29,72,0.9),rgba(190,18,60,0.8))] dark:text-slate-50";
   }
 
   if (item.lane === "BLOCKED") {
     return "border-amber-200 bg-[linear-gradient(180deg,rgba(255,251,235,1),rgba(254,240,180,0.98))] text-amber-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(245,158,11,0.3)] dark:bg-[linear-gradient(180deg,rgba(48,32,5,1),rgba(58,40,5,0.98))] dark:text-amber-300";
   }
 
-  if (isQuietRow(item)) {
-    return "border-emerald-200 bg-[linear-gradient(180deg,rgba(240,253,244,1),rgba(220,252,231,0.98))] text-emerald-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(52,211,153,0.3)] dark:bg-[linear-gradient(180deg,rgba(8,35,20,1),rgba(10,45,25,0.98))] dark:text-emerald-300";
+  if (isPublishedItem(item)) {
+    return "border-emerald-200 bg-[linear-gradient(180deg,rgba(240,253,244,1),rgba(220,252,231,0.98))] text-emerald-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(74,222,128,0.4)] dark:bg-[linear-gradient(180deg,rgba(22,163,74,0.9),rgba(21,128,61,0.8))] dark:text-white";
   }
 
-  return "border-sky-200 bg-[linear-gradient(180deg,rgba(240,249,255,1),rgba(219,234,254,0.98))] text-sky-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(56,189,248,0.2)] dark:bg-[linear-gradient(180deg,rgba(8,22,48,1),rgba(8,28,58,0.98))] dark:text-sky-300";
+  return "border-sky-200 bg-[linear-gradient(180deg,rgba(240,249,255,1),rgba(219,234,254,0.98))] text-sky-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(56,189,248,0.4)] dark:bg-[linear-gradient(180deg,rgba(2,132,199,0.9),rgba(3,105,161,0.8))] dark:text-white";
 }
 
 function getRowSurfaceClasses(item: DecoratedItem, quietRow: boolean, awaitingDesign: boolean) {
   if (quietRow) {
-    return "border-emerald-200/90 bg-[linear-gradient(135deg,rgba(244,253,247,0.99),rgba(220,252,231,0.94))] shadow-[0_18px_42px_-34px_rgba(34,197,94,0.16),inset_0_1px_0_rgba(255,255,255,0.84)] dark:border-[rgba(52,211,153,0.18)] dark:bg-[linear-gradient(135deg,rgba(8,28,18,0.99),rgba(10,38,24,0.96))] dark:shadow-[0_18px_42px_-34px_rgba(52,211,153,0.2),inset_0_1px_0_rgba(52,211,153,0.06)]";
+    return "border-emerald-200/90 bg-[linear-gradient(135deg,rgba(244,253,247,0.99),rgba(220,252,231,0.94))] shadow-[0_18px_42px_-34px_rgba(34,197,94,0.16),inset_0_1px_0_rgba(255,255,255,0.84)] dark:border-[rgba(52,211,153,0.18)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.99),rgba(11,17,32,0.96))] dark:shadow-[0_18px_42px_-34px_rgba(52,211,153,0.15),inset_0_1px_0_rgba(255,255,255,0.02)]";
   }
 
   if (awaitingDesign) {
-    return "border-violet-200/90 bg-[linear-gradient(135deg,rgba(250,245,255,0.99),rgba(237,233,254,0.95))] shadow-[0_18px_42px_-34px_rgba(124,58,237,0.16),inset_0_1px_0_rgba(255,255,255,0.84)] dark:border-[rgba(139,92,246,0.18)] dark:bg-[linear-gradient(135deg,rgba(18,8,45,0.99),rgba(25,12,58,0.96))] dark:shadow-[0_18px_42px_-34px_rgba(124,58,237,0.22),inset_0_1px_0_rgba(139,92,246,0.06)]";
+    return "border-violet-200/90 bg-[linear-gradient(135deg,rgba(250,245,255,0.99),rgba(237,233,254,0.95))] shadow-[0_18px_42px_-34px_rgba(124,58,237,0.16),inset_0_1px_0_rgba(255,255,255,0.84)] dark:border-[rgba(139,92,246,0.18)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.99),rgba(11,17,32,0.96))] dark:shadow-[0_18px_42px_-34px_rgba(124,58,237,0.15),inset_0_1px_0_rgba(255,255,255,0.02)]";
   }
 
   if (item.lane === "NEEDS_ACTION") {
-    return "border-orange-200/90 bg-[linear-gradient(135deg,rgba(255,247,237,0.99),rgba(254,215,170,0.95))] shadow-[0_18px_42px_-34px_rgba(249,115,22,0.14),inset_0_1px_0_rgba(255,255,255,0.84)] dark:border-[rgba(249,115,22,0.18)] dark:bg-[linear-gradient(135deg,rgba(45,18,5,0.99),rgba(55,22,5,0.96))] dark:shadow-[0_18px_42px_-34px_rgba(249,115,22,0.18),inset_0_1px_0_rgba(249,115,22,0.06)]";
+    return "border-orange-200/90 bg-[linear-gradient(135deg,rgba(255,247,237,0.99),rgba(254,215,170,0.95))] shadow-[0_18px_42px_-34px_rgba(249,115,22,0.14),inset_0_1px_0_rgba(255,255,255,0.84)] dark:border-[rgba(249,115,22,0.18)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.99),rgba(11,17,32,0.96))] dark:shadow-[0_18px_42px_-34px_rgba(249,115,22,0.15),inset_0_1px_0_rgba(255,255,255,0.02)]";
   }
 
   if (item.lane === "FAILED") {
-    return "border-rose-200/90 bg-[linear-gradient(135deg,rgba(255,244,246,0.99),rgba(255,226,231,0.95))] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(225,29,72,0.18)] dark:bg-[linear-gradient(135deg,rgba(45,8,15,0.99),rgba(55,10,18,0.96))] dark:shadow-[inset_0_1px_0_rgba(225,29,72,0.05)]";
+    return "border-rose-200/90 bg-[linear-gradient(135deg,rgba(255,244,246,0.99),rgba(255,226,231,0.95))] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(225,29,72,0.18)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.99),rgba(11,17,32,0.96))] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]";
   }
 
   if (item.lane === "BLOCKED") {
-    return "border-amber-200/90 bg-[linear-gradient(135deg,rgba(255,250,233,0.99),rgba(254,239,183,0.92))] shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(245,158,11,0.15)] dark:bg-[linear-gradient(135deg,rgba(42,28,5,0.99),rgba(52,35,5,0.96))] dark:shadow-[inset_0_1px_0_rgba(245,158,11,0.05)]";
+    return "border-amber-200/90 bg-[linear-gradient(135deg,rgba(255,250,233,0.99),rgba(254,239,183,0.92))] shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(245,158,11,0.15)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.99),rgba(11,17,32,0.96))] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]";
   }
 
-  return "border-sky-200/80 bg-[linear-gradient(135deg,rgba(246,251,255,0.99),rgba(224,242,254,0.92))] shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(56,189,248,0.12)] dark:bg-[linear-gradient(135deg,rgba(8,18,42,0.99),rgba(8,24,55,0.96))] dark:shadow-[inset_0_1px_0_rgba(56,189,248,0.05)]";
+  return "border-sky-200/80 bg-[linear-gradient(135deg,rgba(246,251,255,0.99),rgba(224,242,254,0.92))] shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(56,189,248,0.12)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.99),rgba(11,17,32,0.96))] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]";
 }
 
 function getActionShellClasses(item: DecoratedItem, quietRow: boolean, awaitingDesign: boolean) {
@@ -368,16 +406,18 @@ function getActionIconClasses(item: DecoratedItem, quietRow: boolean, awaitingDe
 
 function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
   const delay = Math.min(index * 28, 280);
+  const semanticDecision = getSemanticWorkflowDecision(item);
   const operationalStatus = getOperationalStatusLabel(item);
-  const primaryStatus = operationalStatus ?? item.currentStatus;
+  const primaryStatus = semanticDecision?.statusKey ?? operationalStatus ?? item.currentStatus;
   const planning = getPlanningDetails(item);
   const itemDate = getItemDate(item);
   const nextAction = getQueueActionLabel(item);
   const publishedPreview = isPublishedItem(item)
     ? getPublishedPreview({ planningSnapshot: item.planningSnapshot, assets: item.assets })
     : null;
-  const quietRow = isQuietRow(item);
-  const awaitingDesign = isAwaitingDesignRow(item, nextAction, primaryStatus);
+  const quietRow = isQuietRow(item, semanticDecision);
+  const awaitingDesign = isAwaitingDesignRow(item, semanticDecision, nextAction, primaryStatus);
+  const hasOverdueOverlay = semanticDecision?.overdueOverlay ?? primaryStatus === "LATE";
   const sourceLabel = getSourceLabel(item);
 
   return (
@@ -452,7 +492,22 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
               </p>
             </div>
 
-            {quietRow ? (
+            {semanticDecision ? (
+              <StatusBadge
+                variant={
+                  semanticDecision.baseVisualFamily === "green"
+                    ? "emerald"
+                    : semanticDecision.baseVisualFamily === "amber"
+                      ? "amber"
+                      : semanticDecision.baseVisualFamily === "lavender"
+                        ? "violet"
+                        : "slate"
+                }
+                label={semanticDecision.visibleStatusLabel}
+                size="xs"
+                className="shrink-0"
+              />
+            ) : quietRow ? (
               <StatusBadge
                 variant="emerald"
                 label={formatOperationalLabel(primaryStatus)}
@@ -485,7 +540,7 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
               <span
                 className={cn(
                   "inline-flex items-center rounded-full border px-2 py-0.5 font-medium",
-                  primaryStatus === "LATE"
+                  hasOverdueOverlay
                     ? "border-rose-200 bg-[linear-gradient(180deg,rgba(255,241,242,1),rgba(255,228,230,0.98))] text-rose-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(225,29,72,0.3)] dark:bg-[linear-gradient(180deg,rgba(48,8,18,1),rgba(58,10,22,0.98))] dark:text-rose-300"
                     : quietRow
                       ? "border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(241,245,249,0.96))] text-slate-500 dark:border-[rgba(99,102,241,0.12)] dark:bg-[linear-gradient(180deg,rgba(20,26,48,0.96),rgba(15,20,40,0.96))] dark:text-slate-500"

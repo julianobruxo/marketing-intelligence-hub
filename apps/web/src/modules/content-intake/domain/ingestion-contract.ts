@@ -34,6 +34,7 @@ const normalizedPlanningFieldsSchema = z.object({
   copyPortuguese: z.string().min(1).optional(),
   sourceAssetLink: z.string().min(1).optional(),
   contentDeadline: z.string().min(1).optional(),
+  ideaOrBrief: z.string().min(1).optional(),
 });
 
 const sourceMetadataSchema = z.object({

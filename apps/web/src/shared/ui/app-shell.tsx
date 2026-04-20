@@ -9,7 +9,6 @@ const navigation = [
   { href: "/queue", label: "Queue", icon: FileText },
   { href: "/import", label: "Import", icon: Download },
   { href: "/templates", label: "Templates", icon: PanelsTopLeft, disabled: true },
-  { href: "/settings", label: "Settings", icon: Settings2 },
 ];
 
 export function AppShell({

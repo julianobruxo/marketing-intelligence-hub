@@ -12,6 +12,16 @@ import { CANVA_SLICE_V1, isSliceOneCanvaEligible } from "@/modules/design-orches
 import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-intake/domain/infer-content-status";
 import type { ActiveTemplateMapping, ContentItemDetail, QueueContentItem } from "./content-queries";
 
+export type SemanticWorkflowDecision = {
+  internalState: "review" | "posted" | "blocked" | "waiting_for_design";
+  statusKey: "REVIEW" | "PUBLISHED" | "WAITING_FOR_COPY" | "READY_FOR_DESIGN";
+  visibleStatusLabel: string;
+  nextActionLabel: string;
+  baseVisualFamily: "slate" | "green" | "amber" | "lavender";
+  overdueOverlay: boolean;
+  requiresHumanReview: boolean;
+};
+
 export type QueueLane = "NEEDS_ACTION" | "IN_PROGRESS" | "FAILED" | "BLOCKED" | "READY";
 
 export type QueueLaneSection = {
@@ -144,6 +154,129 @@ function getOperationalStatus(item: Pick<ContentItemDetail, "planningSnapshot">)
   return readOperationalStatusFromPlanningSnapshot(item.planningSnapshot);
 }
 
+function readSemanticFacts(planningSnapshot: unknown) {
+  if (!planningSnapshot || typeof planningSnapshot !== "object") {
+    return null;
+  }
+
+  const snapshot = planningSnapshot as Record<string, unknown>;
+  const sourceMetadata =
+    snapshot.sourceMetadata && typeof snapshot.sourceMetadata === "object"
+      ? (snapshot.sourceMetadata as Record<string, unknown>)
+      : null;
+  const extra =
+    sourceMetadata?.extra && typeof sourceMetadata.extra === "object"
+      ? (sourceMetadata.extra as Record<string, unknown>)
+      : null;
+  const aiSemantic =
+    extra?.aiSemantic && typeof extra.aiSemantic === "object"
+      ? (extra.aiSemantic as Record<string, unknown>)
+      : null;
+
+  if (!aiSemantic) {
+    return null;
+  }
+
+  const readBoolean = (key: string) => aiSemantic[key] === true;
+
+  return {
+    has_editorial_brief: readBoolean("has_editorial_brief"),
+    has_final_copy: readBoolean("has_final_copy"),
+    is_published: readBoolean("is_published"),
+    is_overdue: aiSemantic.is_overdue === true,
+    is_empty_or_unusable: readBoolean("is_empty_or_unusable"),
+    needs_human_review: readBoolean("needs_human_review"),
+  };
+}
+
+const SEMANTIC_BASE_STATE_CARRIER_STATUSES = new Set<ContentStatus>([
+  ContentStatus.IMPORTED,
+  ContentStatus.IN_REVIEW,
+  ContentStatus.WAITING_FOR_COPY,
+  ContentStatus.READY_FOR_DESIGN,
+  ContentStatus.CONTENT_APPROVED,
+  ContentStatus.PUBLISHED_MANUALLY,
+  ContentStatus.POSTED,
+]);
+
+export function getSemanticWorkflowDecision(
+  item: Pick<QueueContentItem | ContentItemDetail, "currentStatus" | "planningSnapshot">,
+): SemanticWorkflowDecision | null {
+  const semantic = readSemanticFacts(item.planningSnapshot);
+  const operationalStatus = getOperationalStatus(item);
+  const overdueOverlay = semantic?.is_overdue === true || operationalStatus === "LATE";
+
+  if (!semantic && !operationalStatus) {
+    return null;
+  }
+
+  if (semantic?.is_empty_or_unusable) {
+    return {
+      internalState: "review",
+      statusKey: "REVIEW",
+      visibleStatusLabel: "Review workflow state",
+      nextActionLabel: "Review workflow state",
+      baseVisualFamily: "slate",
+      overdueOverlay,
+      requiresHumanReview: true,
+    };
+  }
+
+  const published =
+    item.currentStatus === ContentStatus.POSTED ||
+    item.currentStatus === ContentStatus.PUBLISHED_MANUALLY ||
+    operationalStatus === "PUBLISHED" ||
+    semantic?.is_published === true;
+
+  if (published) {
+    return {
+      internalState: "posted",
+      statusKey: "PUBLISHED",
+      visibleStatusLabel: "POSTED",
+      nextActionLabel: "POSTED",
+      baseVisualFamily: "green",
+      overdueOverlay: false,
+      requiresHumanReview: semantic?.needs_human_review === true,
+    };
+  }
+
+  if (!SEMANTIC_BASE_STATE_CARRIER_STATUSES.has(item.currentStatus)) {
+    return null;
+  }
+
+  if (
+    operationalStatus === "WAITING_FOR_COPY" ||
+    (semantic?.has_editorial_brief === true && semantic.has_final_copy === false)
+  ) {
+    return {
+      internalState: "blocked",
+      statusKey: "WAITING_FOR_COPY",
+      visibleStatusLabel: "Waiting for Copy",
+      nextActionLabel: "Await Copy",
+      baseVisualFamily: "amber",
+      overdueOverlay,
+      requiresHumanReview: semantic?.needs_human_review === true,
+    };
+  }
+
+  if (
+    operationalStatus === "READY_FOR_DESIGN" ||
+    semantic?.has_final_copy === true
+  ) {
+    return {
+      internalState: "waiting_for_design",
+      statusKey: "READY_FOR_DESIGN",
+      visibleStatusLabel: "Generate Design",
+      nextActionLabel: "Generate Design",
+      baseVisualFamily: "lavender",
+      overdueOverlay,
+      requiresHumanReview: semantic?.needs_human_review === true,
+    };
+  }
+
+  return null;
+}
+
 function buildOperationalLaneDetail(operationalStatus: ReturnType<typeof getOperationalStatus>) {
   switch (operationalStatus) {
     case "WAITING_FOR_COPY":
@@ -260,6 +393,44 @@ function buildQueueLaneDetails(item: QueueContentItem) {
       ? latestDesignRequest.errorMessage ?? latestDesignRequest.errorCode ?? "Design provider failure."
       : null;
   const operationalStatus = getOperationalStatus(item);
+  const semanticDecision = getSemanticWorkflowDecision(item);
+
+  if (semanticDecision) {
+    if (semanticDecision.internalState === "posted") {
+      return {
+        lane: "READY" as const,
+        nextActionLabel: "POSTED",
+        waitingOn: "No further action",
+        blocker: null,
+        reason: "The source row is explicitly published, so the item is treated as concluded.",
+        tone: "emerald" as const,
+      };
+    }
+
+    if (semanticDecision.internalState === "blocked") {
+      return {
+        lane: "BLOCKED" as const,
+        nextActionLabel: "Await Copy",
+        waitingOn: "Copywriter",
+        blocker: "The row is real, but the LinkedIn copy is not present yet.",
+        reason: "The spreadsheet row is blocked until copy is available.",
+        tone: "amber" as const,
+      };
+    }
+
+    if (semanticDecision.internalState === "waiting_for_design") {
+      return {
+        lane: semanticDecision.overdueOverlay ? ("FAILED" as const) : ("NEEDS_ACTION" as const),
+        nextActionLabel: "Generate Design",
+        waitingOn: "Internal operator",
+        blocker: null,
+        reason: semanticDecision.overdueOverlay
+          ? "The item is overdue, but its base workflow state is still ready for design."
+          : "Copy is present and the item is ready for the design handoff.",
+        tone: semanticDecision.overdueOverlay ? ("rose" as const) : ("sky" as const),
+      };
+    }
+  }
 
   if (
     item.currentStatus === ContentStatus.IMPORTED ||

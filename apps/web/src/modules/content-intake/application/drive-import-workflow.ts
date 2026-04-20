@@ -39,6 +39,7 @@ import {
   type AiSheetAnalysisResult,
   type AiSheetAnalysisRow,
 } from "./ai-sheet-analyzer";
+import { inferContentOperationalStatus } from "../domain/infer-content-status";
 import {
   contentIngestionPayloadSchema,
   type ContentIngestionPayload,
@@ -170,6 +171,13 @@ function normalizeComparableText(value: string) {
     .trim();
 }
 
+// Normalize a raw sheet header for alias matching.
+// Multi-line headers (e.g. "LinkedIn\n(Up to 3000 characters)") collapse to their first line.
+function normalizeHeaderText(header: string): string {
+  const firstLine = header.split(/\r?\n/)[0] ?? header;
+  return firstLine.trim().toLowerCase();
+}
+
 function tokenizeComparableText(value: string) {
   return normalizeComparableText(value)
     .split(" ")
@@ -264,6 +272,134 @@ function normalizeBooleanish(value: string | boolean | undefined | null) {
   );
 }
 
+function buildAiReasoning(row: AiSheetAnalysisRow) {
+  return row.semantic.reasoning.length > 0
+    ? row.semantic.reasoning
+    : ["AI semantic extractor did not provide explicit reasoning."];
+}
+
+function isAiRowQualified(row: AiSheetAnalysisRow) {
+  if (row.semantic.is_empty_or_unusable) {
+    return false;
+  }
+
+  return (
+    row.semantic.has_editorial_brief ||
+    row.semantic.has_title ||
+    row.semantic.has_final_copy ||
+    row.semantic.is_published
+  );
+}
+
+// Deterministic worksheet-level exclusion for X/Twitter account tabs.
+// Checked by name before AI analysis so X Account rows never enter the queue.
+const X_ACCOUNT_WORKSHEET_PATTERN =
+  /\b(x\s+account|x\.com|twitter(?:\s*\/?\s*x)?)\b|^\s*x\s*$/i;
+
+function isXAccountWorksheet(worksheetName: string): boolean {
+  return X_ACCOUNT_WORKSHEET_PATTERN.test(worksheetName.trim());
+}
+
+// Determines whether a row should be admitted as a queue candidate.
+// Deterministic extraction takes precedence over the AI's platform flags so that
+// Substack, teaser, and brief-only rows in LinkedIn planning worksheets are not
+// incorrectly blocked by the AI's is_non_linkedin_platform / is_empty_or_unusable flags.
+// X Account worksheets are excluded upstream (worksheet-level), so this function
+// only needs to distinguish real editorial rows from decoration/empty rows.
+function isRowQueueCandidate(
+  aiRow: AiSheetAnalysisRow,
+  det: WorksheetExtractedFields,
+): boolean {
+  // Deterministic qualification: date + at least one real content signal.
+  // Trusted over AI platform flags — a Substack article in a LinkedIn plan is valid work.
+  const detQualified =
+    Boolean(det.plannedDate) &&
+    (Boolean(det.title) || Boolean(det.brief) || Boolean(det.linkedinCopy));
+
+  if (detQualified) {
+    return true;
+  }
+
+  // If AI says the row is genuinely empty/unusable and det found nothing useful, skip it.
+  if (aiRow.semantic.is_empty_or_unusable) {
+    return false;
+  }
+
+  // AI qualification: row has at least one recognizable content signal.
+  return (
+    aiRow.semantic.has_editorial_brief ||
+    aiRow.semantic.has_title ||
+    aiRow.semantic.has_final_copy ||
+    aiRow.semantic.is_published
+  );
+}
+
+function deriveAiRowConfidence(row: AiSheetAnalysisRow): "HIGH" | "MEDIUM" | "LOW" {
+  if (row.semantic.needs_human_review) {
+    return "LOW";
+  }
+
+  if (
+    row.semantic.has_final_copy &&
+    (row.semantic.has_title || row.semantic.has_editorial_brief)
+  ) {
+    return "HIGH";
+  }
+
+  if (
+    row.semantic.has_final_copy ||
+    row.semantic.has_title ||
+    row.semantic.has_editorial_brief
+  ) {
+    return "MEDIUM";
+  }
+
+  return "LOW";
+}
+
+function extractSourceAssetLink(rowMap: Record<string, string>) {
+  for (const value of Object.values(rowMap)) {
+    if (!value || typeof value !== "string") {
+      continue;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (!/^https?:\/\//i.test(trimmed)) {
+      continue;
+    }
+
+    if (
+      /(png|jpg|jpeg|gif|webp|canva|figma|image|img|asset|drive\.google\.com)/i.test(
+        trimmed,
+      )
+    ) {
+      return trimmed;
+    }
+  }
+
+  return undefined;
+}
+
+function deriveOperationalStatusFromAiRow(input: {
+  copyEnglish: string;
+  contentDeadline?: string;
+  publishedFlag?: string | boolean;
+}) {
+  return inferContentOperationalStatus({
+    planning: {
+      copyEnglish: input.copyEnglish,
+      contentDeadline: input.contentDeadline,
+    },
+    sourceMetadata: {
+      publishedFlag: input.publishedFlag,
+    },
+  });
+}
+
 function truncateTitle(value: string, maxLength = 140) {
   if (value.length <= maxLength) {
     return value;
@@ -323,6 +459,7 @@ function buildAiRowSearchText(row: AiSheetAnalysisResult["rows"][number]) {
   return normalizeComparableText(
     [
       row.data.date ?? "",
+      row.data.ideaOrBrief ?? "",
       row.data.title ?? "",
       row.data.copy ?? "",
       row.data.deadline ?? "",
@@ -501,15 +638,18 @@ function resolveWorksheetHeaderContext(
   const widestRowLength = worksheet.rows.reduce((max, row) => Math.max(max, row.length), 0);
   const headers = padHeaders(baseHeaders.map((header) => header.trim()), new Array(widestRowLength).fill(""));
 
+  const colMap = buildWorksheetColumnMap(headers);
+
   return {
     headerRowNumber,
     headers,
+    colMap,
     mappedFields: {},
     unmappedHeaders: headers.filter((header) => header.trim().length > 0),
   };
 }
 
-// Deterministic patterns that override AI's isValid: true for obvious non-data rows.
+// Deterministic patterns that override AI semantic qualification for obvious non-data rows.
 // These are high-precision and safe to apply without context.
 const DETERMINISTIC_SKIP_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /^\s*week\s*\d+\s*(?:[-–—].*)?$/i, label: "week separator" },
@@ -549,37 +689,108 @@ function postAiFilterRow(
     }
   }
 
-  // Minimum content gate — only applied when the AI marked the row valid.
-  // Goal: catch AI false-positives on sparse rows without losing real incomplete work items.
-  if (aiRow.isValid) {
+  // Minimum content gate — only applied when AI semantic extraction marked the row as qualified.
+  // Goal: catch sparse/false-positive rows without losing real incomplete work items.
+  if (isAiRowQualified(aiRow)) {
     const hasTitle = Boolean(aiRow.data.title?.trim());
+    const hasBrief = Boolean(aiRow.data.ideaOrBrief?.trim());
     const hasCopy = Boolean(aiRow.data.copy?.trim());
+    const hasPublishedSignal = Boolean(aiRow.data.published?.trim()) || aiRow.semantic.is_published;
     const hasDate = Boolean(aiRow.data.date?.trim());
     const hasDeadline = Boolean(aiRow.data.deadline?.trim());
     const hasChannel = Boolean(aiRow.data.channel?.trim());
     const hasSchedulingSignal = hasDate || hasDeadline || hasChannel;
 
-    // LOW-confidence rows with no extractable title or copy are likely false positives.
-    // MEDIUM/HIGH confidence rows are trusted even when copy is absent (planned items).
-    if (!hasTitle && !hasCopy && aiRow.confidence === "LOW") {
+    if (!hasTitle && !hasBrief && !hasCopy && !hasPublishedSignal && aiRow.semantic.needs_human_review) {
       return {
         allowed: false,
-        reason: "AI marked as low-confidence valid but extracted neither a title nor copy text.",
+        reason: "AI flagged the row for human review without enough operational content signals.",
         disposition: "SKIPPED_NON_DATA",
       };
     }
 
     // If AI extracted absolutely nothing across all six fields, something is wrong.
-    if (!hasTitle && !hasCopy && !hasSchedulingSignal) {
+    if (!hasTitle && !hasBrief && !hasCopy && !hasPublishedSignal && !hasSchedulingSignal) {
       return {
         allowed: false,
-        reason: "AI marked as valid but no recognizable content fields were extracted.",
+        reason: "AI marked as qualified but no recognizable content fields were extracted.",
         disposition: "SKIPPED_NON_DATA",
       };
     }
   }
 
   return { allowed: true };
+}
+
+// Canonical worksheet field identifiers used throughout the import pipeline.
+type WorksheetField =
+  | "plannedDate"
+  | "title"
+  | "publishedFlag"
+  | "platformLabel"
+  | "linkedinCopy"
+  | "brief"
+  | "publishedPostUrl"
+  | "contentDeadline";
+
+// Aliases for each canonical field.  Values are matched against normalizeHeaderText() output
+// so they must already be lowercase/trimmed.  First-match-wins per column.
+const WORKSHEET_FIELD_ALIASES: Record<WorksheetField, string[]> = {
+  plannedDate:      ["date", "planned date"],
+  title:            ["title", "post title", "headline", "campaign"],
+  publishedFlag:    ["published", "status", "posted"],
+  platformLabel:    ["platform", "channel", "account", "person"],
+  linkedinCopy:     ["linkedin copy", "linkedin", "linkedin - up to 3000 characters", "copy", "copy (en)", "english copy"],
+  brief:            ["copywriter brief", "topic", "idea", "theme", "briefing", "instructions", "notes", "notes for copywriter"],
+  publishedPostUrl: ["link to the post", "link to the comments", "post link"],
+  contentDeadline:  ["deadline", "content deadline"],
+};
+
+// Maps each resolved WorksheetField to the column index in this worksheet's header row.
+// Built once per worksheet; undefined means no column matched that field.
+type WorksheetColumnMap = Partial<Record<WorksheetField, number>>;
+
+// Per-row extraction result: only fields whose column exists AND whose cell is non-empty.
+type WorksheetExtractedFields = Partial<Record<WorksheetField, string>>;
+
+// Build the column map for a worksheet by scanning its resolved header array once.
+function buildWorksheetColumnMap(headers: string[]): WorksheetColumnMap {
+  const colMap: WorksheetColumnMap = {};
+
+  for (let i = 0; i < headers.length; i++) {
+    const headerNorm = normalizeHeaderText(headers[i]);
+    if (!headerNorm) {
+      continue;
+    }
+
+    for (const [field, aliases] of Object.entries(WORKSHEET_FIELD_ALIASES) as [WorksheetField, string[]][]) {
+      if (colMap[field] !== undefined) {
+        continue; // first matching column wins
+      }
+      if (aliases.includes(headerNorm)) {
+        colMap[field] = i;
+      }
+    }
+  }
+
+  return colMap;
+}
+
+// Extract canonical field values for a single row using the pre-built worksheet column map.
+function extractColumnarRowFields(
+  colMap: WorksheetColumnMap,
+  rowValues: string[],
+): WorksheetExtractedFields {
+  const result: WorksheetExtractedFields = {};
+
+  for (const [field, colIndex] of Object.entries(colMap) as [WorksheetField, number][]) {
+    const cellValue = rowValues[colIndex]?.trim();
+    if (cellValue) {
+      result[field] = cellValue;
+    }
+  }
+
+  return result;
 }
 
 function buildAiParsedRow(input: {
@@ -594,20 +805,71 @@ function buildAiParsedRow(input: {
   const headers = padHeaders(headerContext.headers, sourceRow);
   const rowValues = normalizeRowValues(headers, sourceRow);
   const rowMap = buildRowMap(headers, rowValues);
+  const semanticReasoning = buildAiReasoning(row);
+  const rowConfidence = deriveAiRowConfidence(row);
 
-  const plannedDate = optionalTrimmed(row.data.date);
-  const campaignLabel = optionalTrimmed(row.data.title);
-  const copyEnglish = optionalTrimmed(row.data.copy) ?? "";
-  const contentDeadline = optionalTrimmed(row.data.deadline);
-  const platformLabel = optionalTrimmed(row.data.channel);
-  const publishedFlag = optionalTrimmed(row.data.published);
+  const sourceAssetLink = extractSourceAssetLink(rowMap);
+
+  // Phase 1 — deterministic extraction: use the worksheet column map (built once per
+  // worksheet) to read canonical field values directly from raw row cells.
+  // The sheet is the source of truth; AI is only consulted to fill gaps.
+  const det = extractColumnarRowFields(headerContext.colMap, rowValues);
+
+  // Phase 1.5 — embedded multi-line cell fallback for old/transitional sheet formats.
+  // Old Yann format: a column with an empty header (or the "Copywriter Brief" column in
+  // transitional sheets) holds "{channel}\n\n{TITLE}\n\n{brief}".
+  // We check rowMap[""] first (truly old format), then det.brief (transitional format where
+  // the "Copywriter Brief" header is present but the Title column is still empty for some rows).
+  if (det.title === undefined) {
+    const multiLineSource = rowMap[""]?.trim() ?? det.brief?.trim();
+    if (multiLineSource) {
+      const paragraphs = multiLineSource.split("\n\n").map((p) => p.trim()).filter(Boolean);
+      // paragraphs[0] = channel label ("LinkedIn"), paragraphs[1] = title, paragraphs[2+] = brief
+      if (paragraphs.length >= 2 && paragraphs[1].length > 0 && paragraphs[1].length <= 120) {
+        det.title = paragraphs[1];
+        if (det.brief === undefined && paragraphs.length >= 3) {
+          det.brief = paragraphs.slice(2).join("\n\n").trim() || undefined;
+        }
+      }
+    }
+  }
+
+  // Phase 2 — AI fills gaps only where the deterministic layer found nothing.
+  const plannedDate = det.plannedDate ?? optionalTrimmed(row.data.date);
+  const rawIdeaOrBrief = det.brief ?? optionalTrimmed(row.data.ideaOrBrief);
+  const rawCampaignLabel = det.title ?? optionalTrimmed(row.data.title);
+  const copyEnglish = row.semantic.has_final_copy
+    ? (det.linkedinCopy ?? optionalTrimmed(row.data.copy) ?? "")
+    : (det.linkedinCopy ?? "");
+  const contentDeadline = det.contentDeadline ?? optionalTrimmed(row.data.deadline);
+  const platformLabel = det.platformLabel ?? optionalTrimmed(row.data.channel);
+  const publishedFlag = det.publishedFlag ?? optionalTrimmed(row.data.published);
+
+  // Phase 3 — title precedence: only apply the generic-topic-label heuristic when the
+  // title was AI-derived. A value read from a named title column is canonical and must not
+  // be reclassified as a topic label regardless of length.
+  const isDeterministicTitle = det.title !== undefined;
+  const isGenericTopicLabel =
+    !isDeterministicTitle &&
+    !!copyEnglish &&
+    !!rawCampaignLabel &&
+    rawCampaignLabel.length <= 40 &&
+    !/[.!?]$/.test(rawCampaignLabel);
+  const campaignLabel = isGenericTopicLabel ? undefined : rawCampaignLabel;
+  const ideaOrBrief = rawIdeaOrBrief ?? (isGenericTopicLabel ? rawCampaignLabel : undefined);
+
   const title = buildFallbackTitle({
     title: campaignLabel,
     copy: copyEnglish,
     date: plannedDate,
     rowNumber: rowIndex,
   });
-  const isPublishedRow = row.suggestedStatus === "PUBLISHED" || normalizeBooleanish(publishedFlag);
+  const isPublishedRow = row.semantic.is_published || normalizeBooleanish(publishedFlag);
+  const operationalStatus = deriveOperationalStatusFromAiRow({
+    copyEnglish,
+    contentDeadline,
+    publishedFlag: isPublishedRow ? publishedFlag ?? true : publishedFlag,
+  });
 
   const parsedRow: GoogleSheetsParsedRow = {
     worksheetId: worksheet.worksheetId,
@@ -630,15 +892,17 @@ function buildAiParsedRow(input: {
     unmappedHeaders: headerContext.unmappedHeaders,
     rowQualification: {
       disposition: "QUALIFIED",
-      confidence: row.confidence,
-      reasons: [row.reason],
+      confidence: rowConfidence,
+      reasons: semanticReasoning,
       signals: {
         hasDate: Boolean(plannedDate),
-        hasTitle: Boolean(campaignLabel),
-        hasCopy: copyEnglish.trim().length > 0,
+        hasTitle: row.semantic.has_title || Boolean(campaignLabel),
+        hasCopy: row.semantic.has_final_copy || copyEnglish.trim().length > 0,
         hasPlatform: Boolean(platformLabel),
-        hasLink: Object.values(rowMap).some((value) => value.includes("http://") || value.includes("https://")),
-        hasPublicationMarker: Boolean(publishedFlag),
+        hasLink:
+          row.semantic.has_design_evidence ||
+          Object.values(rowMap).some((value) => value.includes("http://") || value.includes("https://")),
+        hasPublicationMarker: row.semantic.is_published || Boolean(publishedFlag),
       },
       isPublishedRow,
     },
@@ -662,20 +926,22 @@ function buildAiParsedRow(input: {
       plannedDate,
       platformLabel,
       campaignLabel,
+      ideaOrBrief,
       copyEnglish,
+      sourceAssetLink,
       contentDeadline,
+      copyLanguageIsFallback: row.semantic.copy_language_is_fallback,
     },
     sourceMetadata: {
       publishedFlag,
       extra: {
-        aiSuggestedStatus: row.suggestedStatus,
-        aiRowType: row.rowType,
-        aiConfidence: row.confidence,
-        aiReason: row.reason,
+        aiSemantic: row.semantic,
+        aiReasoning: semanticReasoning,
+        aiDerivedConfidence: rowConfidence,
       },
     },
     contentProfile: inferContentProfileFromSourceGroup(sourceGroup),
-    operationalStatus: row.suggestedStatus,
+    operationalStatus,
     translationRequired: false,
     autoPostEnabled: false,
     preferredDesignProvider: "MANUAL",
@@ -991,7 +1257,7 @@ function buildRowPersistenceData(input: {
     existingContentItemId,
     contentItemId: null,
     title: row.titleDerivation.title,
-    idea: row.planningFields.campaignLabel ?? null,
+    idea: row.planningFields.ideaOrBrief ?? row.planningFields.campaignLabel ?? null,
     copy: row.planningFields.copyEnglish,
     translationDraft: normalizedPayload?.content.translationCopy ?? null,
     plannedDate: row.planningFields.plannedDate ?? null,
@@ -1113,6 +1379,17 @@ async function stageDriveSpreadsheetToStaging(input: {
   });
 
   for (const worksheet of spreadsheetImport.worksheets) {
+    // Deterministic worksheet-level exclusion: skip X.com / Twitter workflow tabs entirely.
+    // This runs before AI analysis so the AI is never consulted for X Account content.
+    if (isXAccountWorksheet(worksheet.worksheetName)) {
+      logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] worksheet:x-account-excluded", {
+        spreadsheetId: record.spreadsheetId,
+        worksheetId: worksheet.worksheetId,
+        worksheetName: worksheet.worksheetName,
+      });
+      continue;
+    }
+
     const analysis = await analyzeSheetWithAI({
       spreadsheetName: record.spreadsheetName,
       sheetName: worksheet.worksheetName,
@@ -1144,25 +1421,31 @@ async function stageDriveSpreadsheetToStaging(input: {
 
     for (const aiRow of analysis.rows) {
       detectedRowCount += 1;
+      const aiReasoning = buildAiReasoning(aiRow);
+      const rawRowAtReportedIndex = worksheet.rows[aiRow.rowIndex - 1] ?? [];
+      const det = extractColumnarRowFields(headerContext.colMap, rawRowAtReportedIndex);
 
-      // Only import rows classified as LINKEDIN_ONLY by the AI analyzer
-      if (!aiRow.isValid || aiRow.platformClassification !== "LINKEDIN_ONLY") {
+      // Deterministic-first queue candidate check.
+      // Replaces the old aiQualified && aiLinkedInOnly gate:
+      // - X Account worksheets are already excluded at the worksheet level above.
+      // - Substack, teaser, and brief-only rows qualify via deterministic extraction
+      //   even when the AI marks them as is_non_linkedin_platform / is_empty_or_unusable.
+      if (!isRowQueueCandidate(aiRow, det)) {
         skippedRowCount += 1;
-        logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:skip-platform", {
+        logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:skip-not-queue-candidate", {
           spreadsheetId: record.spreadsheetId,
           worksheetId: worksheet.worksheetId,
           worksheetName: worksheet.worksheetName,
           rowIndex: aiRow.rowIndex,
-          rowType: aiRow.rowType,
-          confidence: aiRow.confidence,
-          platformClassification: aiRow.platformClassification,
-          reason: aiRow.reason,
+          isEmptyOrUnusable: aiRow.semantic.is_empty_or_unusable,
+          needsHumanReview: aiRow.semantic.needs_human_review,
+          detQualified: Boolean(det.plannedDate) && (Boolean(det.title) || Boolean(det.brief) || Boolean(det.linkedinCopy)),
+          reason: aiReasoning.join(" | "),
         });
         continue;
       }
-      // Post-AI filter: deterministic checks + minimum content gate.
-      // Runs after AI validation to catch patterns AI may miss and drop false positives.
-      const rawRowAtReportedIndex = worksheet.rows[aiRow.rowIndex - 1] ?? [];
+      // Post-AI filter: deterministic skip patterns (week separators, QR code rows, etc.)
+      // + minimum content gate for AI-qualified rows.
       const filterResult = postAiFilterRow(aiRow, rawRowAtReportedIndex);
 
       if (!filterResult.allowed) {
@@ -1172,8 +1455,7 @@ async function stageDriveSpreadsheetToStaging(input: {
           worksheetId: worksheet.worksheetId,
           worksheetName: worksheet.worksheetName,
           rowIndex: aiRow.rowIndex,
-          rowType: aiRow.rowType,
-          aiConfidence: aiRow.confidence,
+          semantic: aiRow.semantic,
           filterReason: filterResult.reason,
         });
         continue;
@@ -1193,10 +1475,9 @@ async function stageDriveSpreadsheetToStaging(input: {
           worksheetId: worksheet.worksheetId,
           worksheetName: worksheet.worksheetName,
           rowIndex: aiRow.rowIndex,
-          rowType: aiRow.rowType,
-          aiConfidence: aiRow.confidence,
+          semantic: aiRow.semantic,
           worksheetRowCount: worksheet.rows.length,
-          reason: aiRow.reason,
+          reason: aiReasoning.join(" | "),
         });
         continue;
       }
@@ -1209,7 +1490,7 @@ async function stageDriveSpreadsheetToStaging(input: {
           reportedRowIndex: aiRow.rowIndex,
           resolvedRowIndex: resolvedRow.rowNumber,
           score: resolvedRow.score,
-          reason: aiRow.reason,
+          reason: aiReasoning.join(" | "),
         });
       }
 

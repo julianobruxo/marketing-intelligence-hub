@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   buildContentTimeline,
   buildOperationalSummary,
+  getSemanticWorkflowDecision,
   buildTemplateRoutingSummary,
 } from "@/modules/content-catalog/application/content-workflow-view-model";
 import { getPublishedPreview } from "@/modules/content-catalog/application/content-preview";
@@ -170,10 +171,11 @@ function extractOriginalCopy(
       ? (normalization.titleDerivation as Record<string, unknown>)
       : null;
 
-  const body =
-    getTrimmedString(planning?.copyEnglish) ??
-    getTrimmedString(planning?.copyPortuguese) ??
-    getTrimmedString(fallbackCopy);
+  const englishCopy = getTrimmedString(planning?.copyEnglish);
+  const portugueseCopy = getTrimmedString(planning?.copyPortuguese);
+  // Only use non-English copy when no English copy exists at all
+  const isFallbackLanguage = !englishCopy && !!portugueseCopy;
+  const body = englishCopy ?? portugueseCopy ?? getTrimmedString(fallbackCopy);
 
   const title = body
     ? getTrimmedString(titleDerivation?.title) ??
@@ -181,7 +183,16 @@ function extractOriginalCopy(
       fallbackTitle
     : null;
 
-  return { title, body };
+  return { title, body, isFallbackLanguage };
+}
+
+function extractSpreadsheetName(planningSnapshot: unknown): string | null {
+  if (!planningSnapshot || typeof planningSnapshot !== "object") return null;
+  const snap = planningSnapshot as Record<string, unknown>;
+  const source = snap.source && typeof snap.source === "object"
+    ? (snap.source as Record<string, unknown>)
+    : null;
+  return getTrimmedString(source?.spreadsheetName);
 }
 
 function formatPlanningValue(value: unknown): string {
@@ -288,7 +299,9 @@ export default async function ContentItemDetailPage({
       stage: ApprovalStage.TRANSLATION,
     });
   const operationalStatus = readOperationalStatusFromPlanningSnapshot(item.planningSnapshot);
+  const semanticDecision = getSemanticWorkflowDecision(item);
   const publishedPreview =
+    semanticDecision?.baseVisualFamily === "green" ||
     operationalStatus === "PUBLISHED" ||
     item.currentStatus === "PUBLISHED_MANUALLY" ||
     item.currentStatus === "POSTED"
@@ -367,6 +380,25 @@ export default async function ContentItemDetailPage({
     typeof item.copy === "string" ? item.copy : null,
   );
 
+  const sourceSpreadsheetName = extractSpreadsheetName(item.planningSnapshot);
+
+  const dateCreatedStr = item.createdAt.toISOString();
+
+  // Find the date this item was marked as posted/published
+  const postedEvent = item.statusEvents.find(
+    (e) => e.toStatus === "POSTED" || e.toStatus === "PUBLISHED_MANUALLY",
+  );
+  const datePostedStr = postedEvent ? postedEvent.createdAt.toISOString() : null;
+
+  const isDesignDone =
+    !!latestAsset ||
+    item.currentStatus === "DESIGN_READY" ||
+    item.currentStatus === "READY_FOR_FINAL_REVIEW" ||
+    item.currentStatus === "READY_TO_POST" ||
+    item.currentStatus === "READY_TO_PUBLISH" ||
+    item.currentStatus === "POSTED" ||
+    item.currentStatus === "PUBLISHED_MANUALLY";
+
   const updatedAtStr = (item.latestImportAt ?? item.updatedAt).toISOString();
 
   return (
@@ -385,13 +417,10 @@ export default async function ContentItemDetailPage({
         primaryActionKind={primaryActionKind}
         updatedAt={updatedAtStr}
         sourceWorksheetName={latestSourceLink?.worksheetName ?? null}
-        sourceRowRef={
-          latestSourceLink
-            ? `Row ${latestSourceLink.rowNumber ?? latestSourceLink.rowId}`
-            : null
-        }
-        importMode={latestImportReceipt ? formatLabel(latestImportReceipt.mode) : null}
-        importStatus={latestImportReceipt ? formatLabel(latestImportReceipt.status) : null}
+        sourceSpreadsheetName={sourceSpreadsheetName}
+        dateCreated={dateCreatedStr}
+        datePosted={datePostedStr}
+        isDesignDone={isDesignDone}
         templateRouteLabel={templateRouting.activeRouteLabel ?? null}
         translationRequired={item.translationRequired}
         translationStatus={item.translationStatus}
@@ -399,6 +428,8 @@ export default async function ContentItemDetailPage({
         contentType={item.contentType}
         originalCopyTitle={originalCopy.title}
         originalCopyBody={originalCopy.body}
+        copyIsFallbackLanguage={originalCopy.isFallbackLanguage}
+        semanticDecision={semanticDecision}
       />
 
       {publishedPreview ? (
@@ -460,9 +491,9 @@ export default async function ContentItemDetailPage({
       ) : (
         <section
           className="app-surface-panel rounded-xl border-l-4 px-5 py-5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
-          style={{ borderLeftColor: '#E8584A' }}
+          style={{ borderLeftColor: '#E11D48' }}
         >
-          <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#E8584A' }}>
+          <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#E11D48' }}>
             Primary action
           </p>
           <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
@@ -485,7 +516,7 @@ export default async function ContentItemDetailPage({
                 <Button
                   type="submit"
                   className="transition-default"
-                  style={{ backgroundColor: '#E8584A', color: 'white' }}
+                  style={{ backgroundColor: '#E11D48', color: 'white' }}
                 >
                   Generate Design
                 </Button>
@@ -498,7 +529,7 @@ export default async function ContentItemDetailPage({
                 <Button
                   type="submit"
                   className="transition-default"
-                  style={{ backgroundColor: '#E8584A', color: 'white' }}
+                  style={{ backgroundColor: '#E11D48', color: 'white' }}
                 >
                   Sync Design
                 </Button>
@@ -516,7 +547,7 @@ export default async function ContentItemDetailPage({
                 <Button
                   type="submit"
                   className="transition-default"
-                  style={{ backgroundColor: '#E8584A', color: 'white' }}
+                  style={{ backgroundColor: '#E11D48', color: 'white' }}
                 >
                   Retry Design
                 </Button>
@@ -529,7 +560,7 @@ export default async function ContentItemDetailPage({
                 <Button
                   type="submit"
                   className="transition-default"
-                  style={{ backgroundColor: '#E8584A', color: 'white' }}
+                  style={{ backgroundColor: '#E11D48', color: 'white' }}
                 >
                   Approve Design
                 </Button>
@@ -542,7 +573,7 @@ export default async function ContentItemDetailPage({
                   <input type="hidden" name="contentItemId" value={item.id} />
                   <input type="hidden" name="stage" value={ApprovalStage.PUBLISH} />
                   <input type="hidden" name="decision" value="APPROVED" />
-                  <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
+                  <Button type="submit" className="transition-default" style={{ backgroundColor: '#E11D48', color: 'white' }}>
                     Final Review
                   </Button>
                 </form>
@@ -580,7 +611,7 @@ export default async function ContentItemDetailPage({
                   <input type="hidden" name="contentItemId" value={item.id} />
                   <input type="hidden" name="stage" value={ApprovalStage.TRANSLATION} />
                   <input type="hidden" name="decision" value="APPROVED" />
-                  <Button type="submit" className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
+                  <Button type="submit" className="transition-default" style={{ backgroundColor: '#E11D48', color: 'white' }}>
                     Review Translation
                   </Button>
                 </form>
@@ -600,7 +631,7 @@ export default async function ContentItemDetailPage({
             )}
 
             {showContinueProcessPrimary && (
-              <Button asChild className="transition-default" style={{ backgroundColor: '#E8584A', color: 'white' }}>
+              <Button asChild className="transition-default" style={{ backgroundColor: '#E11D48', color: 'white' }}>
                 <Link href="#secondary-actions">Continue Process</Link>
               </Button>
             )}

@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/start-dev.mjs",
+    "dev:next": "next dev",
     "build": "next build",
-    "start": "node scripts/start-dev.mjs",
+    "start": "next start",
     "start:prod": "next start",
     "lint": "eslint",
     "db:generate": "prisma generate",

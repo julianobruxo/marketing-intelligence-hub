@@ -4,32 +4,11 @@ import { z } from "zod";
 import { getOpenAIClient } from "@/lib/openai-client";
 import { logEvent } from "@/shared/logging/logger";
 
-const aiSheetStatusSchema = z.enum([
-  "WAITING_FOR_COPY",
-  "READY_FOR_DESIGN",
-  "LATE",
-  "PUBLISHED",
-]);
-
-// Structured classification of every row in the sheet
-const aiSheetRowTypeSchema = z.enum([
-  "CONTENT_ITEM",    // A real marketing work item — a post to be created or published
-  "EMPTY_ROW",       // All cells blank or whitespace only
-  "WEEK_SEPARATOR",  // Week boundary row: "Week 1", "WEEK 2", "Semana 1", "W3"
-  "SECTION_HEADING", // Organizational heading for a group, not an individual post
-  "REPEATED_HEADER", // Repeats the table column headers (common in long sheets)
-  "METADATA_BLOCK",  // Brand notes, strategy notes, team instructions — not a post
-  "REFERENCE_BLOCK", // Hashtag banks, QR codes, links collections — not a post
-  "AMBIGUOUS",       // Cannot be confidently classified — use sparingly
-]);
-
-// How confident the AI is in the classification
-const aiSheetConfidenceSchema = z.enum(["HIGH", "MEDIUM", "LOW"]);
-
 const aiSheetColumnValueSchema = z.string().nullable();
 
 const aiSheetColumnsSchema = z.object({
   date: aiSheetColumnValueSchema,
+  ideaOrBrief: aiSheetColumnValueSchema,
   title: aiSheetColumnValueSchema,
   copy: aiSheetColumnValueSchema,
   deadline: aiSheetColumnValueSchema,
@@ -39,6 +18,7 @@ const aiSheetColumnsSchema = z.object({
 
 const aiSheetRowDataSchema = z.object({
   date: aiSheetColumnValueSchema,
+  ideaOrBrief: aiSheetColumnValueSchema,
   title: aiSheetColumnValueSchema,
   copy: aiSheetColumnValueSchema,
   deadline: aiSheetColumnValueSchema,
@@ -46,23 +26,24 @@ const aiSheetRowDataSchema = z.object({
   channel: aiSheetColumnValueSchema,
 });
 
-
-const aiSheetPlatformClassificationSchema = z.enum([
-  "LINKEDIN_ONLY",
-  "NON_LINKEDIN",
-  "MIXED_CHANNELS",
-  "AMBIGUOUS",
-]);
+const aiSheetRowSemanticSchema = z.object({
+  has_editorial_brief: z.boolean(),
+  has_title: z.boolean(),
+  has_final_copy: z.boolean(),
+  is_published: z.boolean(),
+  has_design_evidence: z.boolean(),
+  is_overdue: z.boolean().nullable(),
+  is_empty_or_unusable: z.boolean(),
+  is_non_linkedin_platform: z.boolean(),
+  copy_language_is_fallback: z.boolean(),
+  needs_human_review: z.boolean(),
+  reasoning: z.array(z.string()),
+});
 
 const aiSheetRowSchema = z.object({
   rowIndex: z.number().int().positive(),
-  rowType: aiSheetRowTypeSchema,
-  isValid: z.boolean(),
-  confidence: aiSheetConfidenceSchema,
-  reason: z.string(),
   data: aiSheetRowDataSchema,
-  suggestedStatus: aiSheetStatusSchema,
-  platformClassification: aiSheetPlatformClassificationSchema,
+  semantic: aiSheetRowSemanticSchema,
 });
 
 export const aiSheetAnalysisResultSchema = z.object({
@@ -73,8 +54,6 @@ export const aiSheetAnalysisResultSchema = z.object({
 
 export type AiSheetAnalysisResult = z.infer<typeof aiSheetAnalysisResultSchema>;
 export type AiSheetAnalysisRow = z.infer<typeof aiSheetRowSchema>;
-export type AiSheetRowType = z.infer<typeof aiSheetRowTypeSchema>;
-export type AiSheetConfidence = z.infer<typeof aiSheetConfidenceSchema>;
 
 const AI_SHEET_ANALYSIS_SCHEMA = {
   type: "object",
@@ -86,13 +65,14 @@ const AI_SHEET_ANALYSIS_SCHEMA = {
       additionalProperties: false,
       properties: {
         date: { type: ["string", "null"] },
+        ideaOrBrief: { type: ["string", "null"] },
         title: { type: ["string", "null"] },
         copy: { type: ["string", "null"] },
         deadline: { type: ["string", "null"] },
         published: { type: ["string", "null"] },
         channel: { type: ["string", "null"] },
       },
-      required: ["date", "title", "copy", "deadline", "published", "channel"],
+      required: ["date", "ideaOrBrief", "title", "copy", "deadline", "published", "channel"],
     },
     rows: {
       type: "array",
@@ -101,202 +81,175 @@ const AI_SHEET_ANALYSIS_SCHEMA = {
         additionalProperties: false,
         properties: {
           rowIndex: { type: "integer" },
-          rowType: {
-            type: "string",
-            enum: [
-              "CONTENT_ITEM",
-              "EMPTY_ROW",
-              "WEEK_SEPARATOR",
-              "SECTION_HEADING",
-              "REPEATED_HEADER",
-              "METADATA_BLOCK",
-              "REFERENCE_BLOCK",
-              "AMBIGUOUS",
-            ],
-          },
-          isValid: { type: "boolean" },
-          confidence: {
-            type: "string",
-            enum: ["HIGH", "MEDIUM", "LOW"],
-          },
-          reason: { type: "string" },
           data: {
             type: "object",
             additionalProperties: false,
             properties: {
               date: { type: ["string", "null"] },
+              ideaOrBrief: { type: ["string", "null"] },
               title: { type: ["string", "null"] },
               copy: { type: ["string", "null"] },
               deadline: { type: ["string", "null"] },
               published: { type: ["string", "null"] },
               channel: { type: ["string", "null"] },
             },
-            required: ["date", "title", "copy", "deadline", "published", "channel"],
+            required: ["date", "ideaOrBrief", "title", "copy", "deadline", "published", "channel"],
           },
-          suggestedStatus: {
-            type: "string",
-            enum: ["WAITING_FOR_COPY", "READY_FOR_DESIGN", "LATE", "PUBLISHED"],
-          },
-          platformClassification: {
-            type: "string",
-            enum: [
-              "LINKEDIN_ONLY",
-              "NON_LINKEDIN",
-              "MIXED_CHANNELS",
-              "AMBIGUOUS",
+          semantic: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              has_editorial_brief: { type: "boolean" },
+              has_title: { type: "boolean" },
+              has_final_copy: { type: "boolean" },
+              is_published: { type: "boolean" },
+              has_design_evidence: { type: "boolean" },
+              is_overdue: { type: ["boolean", "null"] },
+              is_empty_or_unusable: { type: "boolean" },
+              is_non_linkedin_platform: { type: "boolean" },
+              copy_language_is_fallback: { type: "boolean" },
+              needs_human_review: { type: "boolean" },
+              reasoning: {
+                type: "array",
+                items: { type: "string" },
+              },
+            },
+            required: [
+              "has_editorial_brief",
+              "has_title",
+              "has_final_copy",
+              "is_published",
+              "has_design_evidence",
+              "is_overdue",
+              "is_empty_or_unusable",
+              "is_non_linkedin_platform",
+              "copy_language_is_fallback",
+              "needs_human_review",
+              "reasoning",
             ],
           },
         },
-        required: ["rowIndex", "rowType", "isValid", "confidence", "reason", "data", "suggestedStatus", "platformClassification"],
+        required: ["rowIndex", "data", "semantic"],
       },
     },
   },
   required: ["tableDetected", "columns", "rows"],
 } as const;
 
+const AI_SHEET_ANALYSIS_PROMPT = `You are a strict spreadsheet interpretation and workflow-extraction agent for the Marketing Intelligence Hub.
 
-const AI_SHEET_ANALYSIS_PROMPT = `You are an expert at analyzing marketing content planning spreadsheets.
+Your job is to read the entire imported spreadsheet structure first, understand what each field actually means, and then return only the rows and fields that truly belong to the workflow.
 
-For every row, you must classify the platform intent using all available context. For each row, set a field "platformClassification" to one of:
-- LINKEDIN_ONLY: The row is exclusively for LinkedIn workflow (no other platform is referenced or implied)
-- NON_LINKEDIN: The row is for another platform (e.g., X/Twitter, Substack, blog, newsletter, etc.)
-- MIXED_CHANNELS: The row is for LinkedIn plus any other platform, or describes cross-posting, multi-channel, or ambiguous/mixed distribution
-- AMBIGUOUS: The row's platform cannot be confidently determined as LinkedIn-only
+Do NOT guess.
+Do NOT classify rows from isolated cells.
+Do NOT assume fixed column letters across all plans.
+Do NOT invent metadata.
 
-Default: If there is any uncertainty, use AMBIGUOUS. Only classify as LINKEDIN_ONLY if the row is clearly and exclusively for LinkedIn.
+Today is provided in the user payload as "todayDate" and must be used for overdue checks.
 
-Examples:
-| title | copy | channel | → platformClassification |
-|-------|------|---------|------------------------|
-| "LinkedIn carousel for Yann" | ... | LinkedIn | LINKEDIN_ONLY |
-| "X thread for Yann" | ... | X | NON_LINKEDIN |
-| "LinkedIn + Substack" | ... | LinkedIn | MIXED_CHANNELS |
-| "Repurpose for LinkedIn and X" | ... | LinkedIn | MIXED_CHANNELS |
-| "Post on Yann account" | ... | X | NON_LINKEDIN |
-| "Customer story" | ... | (empty) | AMBIGUOUS |
+# STEP 1 — READ THE FULL STRUCTURE FIRST
+Before classifying any row, survey the entire sheet:
+- Identify which block is the operational content planning table.
+- Identify any top-sheet admin noise: social profile metadata, connection counts, access credentials, booking links, QR code areas, decorative merged cells. These are NOT workflow rows.
+- Identify the real column headers of the operational table. Column positions may differ across sheets — do not assume fixed positions.
 
+# STEP 2 — CLASSIFY EACH ROW
+For each row BELOW the operational table header, produce one entry.
 
+Do NOT produce entries for:
+- rows that are part of the top-sheet admin/header block
+- access detail rows
+- social profile metadata rows
+- decorative or fully blank rows
+- rows whose only content is in a non-operational header section
 
-## Your role
+# STRICT FIELD MAPPING RULES
 
-These are internal marketing operations sheets that track social media posts (LinkedIn, Instagram, Substack, etc.) at various stages of planning and production.
+## data.ideaOrBrief
+Map here: Task, Topic, Idea, Theme, Briefing, Instructions, Notes, Notes for copywriter.
+This field holds guidance, outlines, and category signals. It is NEVER final copy.
 
-For each worksheet you will:
-1. Determine if it contains a content planning table (tableDetected)
-2. Identify the column mapping for that table
-3. Classify every row below the detected header row
+## data.title
+Map here ONLY when the cell contains a specific content-item title — a name that identifies this particular piece of content.
+Do NOT map here when the cell contains a generic topic or category label such as "News/Updates", "Industry Insight", "Thought Leadership", "Personal Story", or any other categorical phrase that classifies many posts.
+If the AI-detected "title" value is short (40 characters or fewer), contains no sentence-ending punctuation, and looks like a category or theme label, it belongs in ideaOrBrief instead — set title to null for that row.
 
-## Row types — classify every row as exactly one
+## data.copy
+Map here ONLY when the cell contains polished, publication-ready body text — the actual LinkedIn post text.
+Task descriptions, editorial briefs, instructions, and topic labels are never final copy.
+When both an English copy field and a non-English copy field are present in a row:
+  - Extract the English value into data.copy.
+  - Set copy_language_is_fallback to false.
+When only a non-English copy field exists and the English field is empty/null:
+  - Extract the non-English value into data.copy.
+  - Set copy_language_is_fallback to true.
+When no copy at all exists, set data.copy to null and copy_language_is_fallback to false.
 
-**CONTENT_ITEM**
-A real marketing work item describing a specific piece of content to be created or published.
-A CONTENT_ITEM MUST have at least: a title/idea describing what the post is about, OR actual copy text.
-A date or channel alone does NOT make a content item.
+## data.date
+The planned/scheduled date for this content item.
 
-**EMPTY_ROW**
-All cells are empty, contain only whitespace, or have no visible content.
+## data.deadline
+The content production deadline, distinct from the planned posting date.
 
-**WEEK_SEPARATOR**
-A row that marks a week boundary — it is a label, not content.
-Examples: "Week 1", "WEEK 2", "Semana 1", "Week 3 – High Performance", "W1", "W2 –"
+## data.published
+The published/posted marker or direct post URL, if present.
 
-**SECTION_HEADING**
-An organizational heading that groups content items but is not itself an individual post.
-Examples: "High Performance Content", "MONTHLY GOALS: ...", "Always-on content", "Awareness posts", "Q2 PLANNING"
+## data.channel
+The distribution platform. Extract as-is from the channel/platform cell.
 
-**REPEATED_HEADER**
-A row that repeats the column header labels. Common in long sheets where headers are repeated mid-sheet.
-Example: a row with "Date", "Platform", "Title", "Copy", "Published" in roughly the right positions.
+# SEMANTIC FLAG RULES
 
-**METADATA_BLOCK**
-A row with reference, brand, or strategy information that is not an individual post.
-Examples: "Brand voice: professional but approachable", "Notes: review before posting", "Team: Jane (copy), Bob (design)"
+## has_editorial_brief
+true when ideaOrBrief contains actual guidance, instructions, or a topic signal.
+false when ideaOrBrief is empty or null.
 
-**REFERENCE_BLOCK**
-A row containing supplementary material that supports the plan but is not a post itself.
-Examples: "Hashtags: #marketing #b2b #linkedin", "QR Code link: https://...", "Link block:", "Image bank: https://..."
+## has_title
+true when data.title contains a specific content-item title (not a category label).
+false otherwise.
 
-**AMBIGUOUS**
-Genuinely cannot be classified. Use only when truly unclear. Ambiguous rows get isValid: false.
+## has_final_copy
+true only when data.copy contains polished, publication-ready text.
+A task description, brief, or topic label is never final copy.
+false when data.copy is null or contains only instructional/categorical text.
 
-## The isValid field
+## is_published
+true only when explicit evidence: Published field says Yes/posted/done, or a direct LinkedIn post URL is present.
+Generic links, draft links, or image asset URLs are NOT publication proof.
 
-- Set isValid: **true** only when rowType is CONTENT_ITEM
-- Set isValid: **false** for every other rowType (including AMBIGUOUS)
+## has_design_evidence
+true when an image URL, asset link, or Canva link is present in any cell of the row.
 
-## Confidence levels
+## is_overdue
+Compute from data.deadline vs todayDate. null when deadline is missing or unparseable.
 
-For CONTENT_ITEM rows, confidence reflects how much useful content the row contains:
-- **HIGH**: Has title/idea + copy, OR has title/idea + date + channel (3 or more strong signals)
-- **MEDIUM**: Has title/idea OR copy, plus at least one scheduling signal (date, deadline, or channel)
-- **LOW**: Has only title/idea OR only copy, with no other context — possibly an early-stage idea or placeholder
+## is_empty_or_unusable
+true when the row has no usable content for the workflow.
+true when the row belongs to a non-operational section (admin, header noise, profile metadata).
 
-For non-CONTENT_ITEM rows, confidence reflects certainty of the classification:
-- **HIGH**: Very certain this row is not a content item
-- **MEDIUM**: Fairly sure it is not a content item
-- **LOW**: Uncertain — this might actually be a content item (when this happens, use AMBIGUOUS instead)
+## is_non_linkedin_platform
+true when data.channel explicitly names a non-LinkedIn platform:
+X, X.com, X Account, Twitter, x/twitter, Substack, Instagram, YouTube, TikTok, Facebook, Threads, Newsletter, Blog.
+false when channel is LinkedIn, empty, or null.
+A row with is_non_linkedin_platform true must also have is_empty_or_unusable true — it does not belong in the LinkedIn workflow.
 
-## Column detection — use semantic understanding, not exact matching
+## copy_language_is_fallback
+true when data.copy was populated from a non-English field because no English copy existed.
+false in all other cases.
 
-The same column may appear under many names. Identify it by meaning:
-- Date column: "Date", "Planned date", "Post date", "Day", "Scheduled"
-- Title column: "Title", "Post title", "Idea", "Topic", "Theme", "Campaign", "Post idea", "Content idea"
-- Copy column: "Copy", "LinkedIn Copy", "LinkedIn – up to 3000 characters", "Post copy", "English copy", "Text", "LinkedIn", "Caption"
-- Deadline column: "Deadline", "Content deadline", "Due date", "Due", "Deliver by"
-- Published column: "Published", "Posted", "Status", "Done", "Live", "Published?", "Went live"
-- Channel column: "Platform", "Channel", "Account", "Network", "Where"
+## needs_human_review
+true when evidence is weak, conflicting, or ambiguous.
 
-## Valid row examples (always include these)
+# OUTPUT
+Return:
+1) tableDetected (true/false)
+2) columns — the real column header letter/name for each logical field detected
+3) rows[] — one entry per operational content row with rowIndex, data, and semantic
 
-| date | title | copy | channel | → rowType | confidence |
-|------|-------|------|---------|-----------|------------|
-| Apr 15 | AI trends post | LinkedIn just updated… | LinkedIn | CONTENT_ITEM | HIGH |
-| Apr 20 | Product launch announcement | (empty) | LinkedIn | CONTENT_ITEM | MEDIUM |
-| (empty) | Customer success story | We helped XYZ company… | (empty) | CONTENT_ITEM | MEDIUM |
-| (empty) | Marketing automation ideas | (empty) | (empty) | CONTENT_ITEM | LOW |
-| May 1 | Quarterly review | (empty) | LinkedIn | CONTENT_ITEM | MEDIUM |
-
-## Invalid row examples (always exclude these)
-
-| cells | → rowType |
-|-------|-----------|
-| "Week 1", "", "", "" | WEEK_SEPARATOR |
-| "Week 2 – Performance Content", "", "" | WEEK_SEPARATOR |
-| "High Performance Content", "", "" | SECTION_HEADING |
-| "MONTHLY GOALS: Increase followers 15%", "" | SECTION_HEADING |
-| "Date", "Platform", "Title", "Copy", "Published" | REPEATED_HEADER |
-| "Hashtags: #marketing #b2b #linkedin", "" | REFERENCE_BLOCK |
-| "QR Code: https://qr.example.com", "" | REFERENCE_BLOCK |
-| "Brand voice: professional", "" | METADATA_BLOCK |
-| "", "", "", "" | EMPTY_ROW |
-| "Apr 2026", "", "", "" | SECTION_HEADING (month label, no post content) |
-| "Apr 15", "", "", "" | SECTION_HEADING (date-only, no title/copy = not a post) |
-
-## tableDetected rule
-
-Set tableDetected: true if the worksheet contains a structured grid of marketing content rows.
-Set tableDetected: false for dashboards, summary sheets, reference-only sheets, or sheets with no table structure.
-When in doubt, set tableDetected: true and let row classification handle the filtering.
-If tableDetected is false, return an empty rows array.
-
-## Key rules
-
-1. Return a rows[] entry for EVERY row below the detected header — including all non-data rows.
-2. rowIndex MUST be the exact 1-based row number as provided in the input. Do not renumber. Do not skip.
-3. For non-CONTENT_ITEM rows: set all data fields to null and suggestedStatus to "WAITING_FOR_COPY".
-4. Many CONTENT_ITEM rows have no copy yet — this is completely normal. Do not reject them for missing copy.
-5. Incomplete rows that represent real planned work MUST be included as CONTENT_ITEM.
-6. Do NOT require copy to be present. Copy-pending planned items are valid.
-7. When borderline, prefer CONTENT_ITEM over AMBIGUOUS to avoid dropping real work.
-
-## Status rules — for CONTENT_ITEM rows only
-
-- published field contains "Yes", "Published", "Done", "Live", "Complete", "✓" → PUBLISHED
-- copy text is absent or empty → WAITING_FOR_COPY
-- deadline exists and appears to be in the past → LATE
-- otherwise → READY_FOR_DESIGN
-
-Return ONLY valid JSON matching the schema. No explanations outside the JSON.`;
+Output constraints:
+- JSON only, schema-compliant.
+- No prose outside JSON.
+- Be conservative. When in doubt, needs_human_review = true.
+`;
 
 function normalizeRows(rows: string[][]) {
   return rows.map((row) => row.map((cell) => `${cell ?? ""}`));
@@ -305,6 +258,7 @@ function normalizeRows(rows: string[][]) {
 function buildUserPayload(input: AiSheetAnalyzerInput) {
   return JSON.stringify(
     {
+      todayDate: new Date().toISOString().slice(0, 10),
       spreadsheetName: input.spreadsheetName,
       sheetName: input.sheetName,
       detectedHeaders: input.detectedHeaders ?? null,
@@ -321,6 +275,21 @@ export type AiSheetAnalyzerInput = {
   rows: string[][];
   detectedHeaders?: string[];
 };
+
+function countAcceptedRows(parsed: AiSheetAnalysisResult) {
+  return parsed.rows.filter((row) => {
+    if (row.semantic.is_empty_or_unusable) {
+      return false;
+    }
+
+    return (
+      row.semantic.has_editorial_brief ||
+      row.semantic.has_title ||
+      row.semantic.has_final_copy ||
+      row.semantic.is_published
+    );
+  }).length;
+}
 
 export async function analyzeSheetWithAI(input: AiSheetAnalyzerInput): Promise<AiSheetAnalysisResult> {
   const openai = getOpenAIClient();
@@ -359,34 +328,17 @@ export async function analyzeSheetWithAI(input: AiSheetAnalyzerInput): Promise<A
   });
 
   const parsed = aiSheetAnalysisResultSchema.parse(JSON.parse(response.output_text));
-
-  const validRows = parsed.rows.filter((row) => row.isValid);
-  const invalidRows = parsed.rows.filter((row) => !row.isValid);
-  const confidenceCounts = validRows.reduce(
-    (acc, row) => {
-      acc[row.confidence] = (acc[row.confidence] ?? 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>,
-  );
-  const rowTypeCounts = parsed.rows.reduce(
-    (acc, row) => {
-      acc[row.rowType] = (acc[row.rowType] ?? 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>,
-  );
+  const reviewRows = parsed.rows.filter((row) => row.semantic.needs_human_review).length;
+  const acceptedRows = countAcceptedRows(parsed);
 
   logEvent("info", "[TRACE_IMPORT_QUEUE][AI_ANALYZER] result", {
     spreadsheetName: input.spreadsheetName,
     sheetName: input.sheetName,
     tableDetected: parsed.tableDetected,
     analyzedRows: parsed.rows.length,
-    validRows: validRows.length,
-    invalidRows: invalidRows.length,
+    acceptedRows,
+    reviewRows,
     columns: parsed.columns,
-    confidenceCounts,
-    rowTypeCounts,
   });
 
   return parsed;
