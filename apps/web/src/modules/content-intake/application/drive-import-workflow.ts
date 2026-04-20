@@ -1136,6 +1136,74 @@ function buildRowPersistenceData(input: {
   };
 }
 
+/**
+ * Builds a minimal SpreadsheetImportRow record for a row that was excluded
+ * during staging (not-queue-candidate, post-AI-filter, out-of-range).
+ *
+ * These records are persisted with rowStatus=SKIPPED so that every row decision
+ * is queryable after the import. Previously skipped rows only incremented the
+ * batch-level skippedRowCount counter and were otherwise invisible.
+ *
+ * Satisfies the schema's required columns (title, copy, matchSignals, rowPayload)
+ * with safe placeholder values. No AI data is persisted for empty/unusable rows.
+ */
+function buildSkippedRowTrace(input: {
+  worksheet: GoogleSheetsRawWorksheetImport;
+  rowIndex: number;
+  rowId: string;
+  rowValues: string[];
+  det: WorksheetExtractedFields;
+  skipStage: "not-queue-candidate" | "post-ai-filter" | "out-of-range";
+  skipReason: string;
+}): Omit<Prisma.SpreadsheetImportRowCreateManyInput, "batchId"> {
+  const { worksheet, rowIndex, rowId, rowValues, det, skipStage, skipReason } = input;
+  return {
+    worksheetId: worksheet.worksheetId,
+    worksheetName: worksheet.worksheetName,
+    rowId,
+    rowNumber: rowIndex,
+    rowVersion: null,
+    rowKind: "SKIPPED",
+    rowStatus: DriveSpreadsheetRowState.SKIPPED,
+    conflictConfidence: DriveConflictConfidence.NO_MEANINGFUL_MATCH,
+    conflictAction: null,
+    existingContentItemId: null,
+    contentItemId: null,
+    title: det.title ?? det.brief?.slice(0, 120) ?? `row-${rowIndex}`,
+    idea: det.brief ?? null,
+    copy: det.linkedinCopy ?? "",
+    translationDraft: null,
+    plannedDate: det.plannedDate ?? null,
+    publishedFlag: det.publishedFlag ?? null,
+    publishedPostUrl: det.publishedPostUrl ?? null,
+    sourceAssetLink: null,
+    translationRequired: false,
+    autoPostEnabled: false,
+    preferredDesignProvider: null,
+    matchSignals: {
+      hasDate: Boolean(det.plannedDate),
+      hasTitle: Boolean(det.title),
+      hasCopy: Boolean(det.linkedinCopy),
+      hasPlatform: Boolean(det.platformLabel),
+      hasLink: Boolean(det.publishedPostUrl),
+      hasPublicationMarker: Boolean(det.publishedFlag),
+    },
+    rowPayload: {
+      rowId,
+      rowNumber: rowIndex,
+      rowVersion: null,
+      worksheetId: worksheet.worksheetId,
+      worksheetName: worksheet.worksheetName,
+      rowValues: rowValues.slice(0, 20), // cap to avoid storing huge rows
+      skipStage,
+      detExtracted: det,
+    },
+    normalizedPayload: Prisma.JsonNull,
+    conflictSuggestion: Prisma.JsonNull,
+    reason: skipReason,
+  };
+}
+
 function buildSpreadsheetSnapshot(spreadsheet: SpreadsheetImportBatch & { rows: SpreadsheetImportRow[] }) {
   return {
     id: spreadsheet.id,
@@ -1260,6 +1328,13 @@ async function stageDriveSpreadsheetToStaging(input: {
       const aiReasoning = buildAiReasoning(aiRow);
       const rawRowAtReportedIndex = worksheet.rows[aiRow.rowIndex - 1] ?? [];
       const det = extractColumnarRowFields(headerContext.colMap, rawRowAtReportedIndex);
+      // Stable row ID derived from worksheet + reported AI row index (before reconciliation).
+      // Used for both skipped trace records and qualified rows.
+      const deterministicRowId = buildDeterministicRowId({
+        spreadsheetId: record.driveFileId,
+        worksheetName: worksheet.worksheetName,
+        rowNumber: aiRow.rowIndex,
+      });
 
       // Deterministic-first queue candidate check.
       // Replaces the old aiQualified && aiLinkedInOnly gate:
@@ -1267,7 +1342,9 @@ async function stageDriveSpreadsheetToStaging(input: {
       // - Substack, teaser, and brief-only rows qualify via deterministic extraction
       //   even when the AI marks them as is_non_linkedin_platform / is_empty_or_unusable.
       if (!isRowQueueCandidate(aiRow, det)) {
-        skippedRowCount += 1;
+        const skipReason = aiRow.semantic.is_empty_or_unusable
+          ? "Row marked empty or unusable by AI and no deterministic content signals found."
+          : `Row did not pass queue candidate check. AI reasoning: ${aiReasoning.join(" | ") || "(none)"}`;
         logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:skip-not-queue-candidate", {
           spreadsheetId: record.spreadsheetId,
           worksheetId: worksheet.worksheetId,
@@ -1276,8 +1353,19 @@ async function stageDriveSpreadsheetToStaging(input: {
           isEmptyOrUnusable: aiRow.semantic.is_empty_or_unusable,
           needsHumanReview: aiRow.semantic.needs_human_review,
           detQualified: Boolean(det.plannedDate) && (Boolean(det.title) || Boolean(det.brief) || Boolean(det.linkedinCopy)),
-          reason: aiReasoning.join(" | "),
+          reason: skipReason,
         });
+        // ── OBSERVABILITY: persist a SKIPPED trace record so this row is queryable
+        stagedRows.push(buildSkippedRowTrace({
+          worksheet,
+          rowIndex: aiRow.rowIndex,
+          rowId: deterministicRowId,
+          rowValues: rawRowAtReportedIndex,
+          det,
+          skipStage: "not-queue-candidate",
+          skipReason,
+        }));
+        skippedRowCount += 1;
         continue;
       }
       // Post-AI filter: deterministic skip patterns (week separators, QR code rows, etc.)
@@ -1285,7 +1373,6 @@ async function stageDriveSpreadsheetToStaging(input: {
       const filterResult = postAiFilterRow(aiRow, rawRowAtReportedIndex);
 
       if (!filterResult.allowed) {
-        skippedRowCount += 1;
         logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:post-ai-filter", {
           spreadsheetId: record.spreadsheetId,
           worksheetId: worksheet.worksheetId,
@@ -1294,6 +1381,17 @@ async function stageDriveSpreadsheetToStaging(input: {
           semantic: aiRow.semantic,
           filterReason: filterResult.reason,
         });
+        // ── OBSERVABILITY: persist a SKIPPED trace record
+        stagedRows.push(buildSkippedRowTrace({
+          worksheet,
+          rowIndex: aiRow.rowIndex,
+          rowId: deterministicRowId,
+          rowValues: rawRowAtReportedIndex,
+          det,
+          skipStage: "post-ai-filter",
+          skipReason: filterResult.reason,
+        }));
+        skippedRowCount += 1;
         continue;
       }
 
@@ -1305,7 +1403,7 @@ async function stageDriveSpreadsheetToStaging(input: {
       });
 
       if (resolvedRow.rowNumber === null) {
-        skippedRowCount += 1;
+        const skipReason = `Row index ${aiRow.rowIndex} could not be reconciled to a worksheet row. Sheet has ${worksheet.rows.length} rows.`;
         logEvent("warn", "[TRACE_IMPORT_QUEUE][STAGE] row:out-of-range", {
           spreadsheetId: record.spreadsheetId,
           worksheetId: worksheet.worksheetId,
@@ -1315,6 +1413,17 @@ async function stageDriveSpreadsheetToStaging(input: {
           worksheetRowCount: worksheet.rows.length,
           reason: aiReasoning.join(" | "),
         });
+        // ── OBSERVABILITY: persist a SKIPPED trace record
+        stagedRows.push(buildSkippedRowTrace({
+          worksheet,
+          rowIndex: aiRow.rowIndex,
+          rowId: deterministicRowId,
+          rowValues: rawRowAtReportedIndex,
+          det,
+          skipStage: "out-of-range",
+          skipReason,
+        }));
+        skippedRowCount += 1;
         continue;
       }
 
