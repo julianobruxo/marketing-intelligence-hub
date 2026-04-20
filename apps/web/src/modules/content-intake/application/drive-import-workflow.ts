@@ -1245,11 +1245,17 @@ async function stageDriveSpreadsheetToStaging(input: {
   importedById?: string | null;
 }) {
   const { prisma, record, reimportStrategy, importedById } = input;
+
+  // ── TIMING: batch-level wall-clock start
+  const batchStartMs = Date.now();
+
+  const discoveryStartMs = Date.now();
   const spreadsheetImport = await readGoogleSpreadsheetWorkbook({
     spreadsheetId: record.driveFileId,
     spreadsheetName: record.spreadsheetName,
     sourceGroup: record.sourceContext.sourceGroup as DriveSpreadsheetRecord["sourceContext"]["sourceGroup"],
   });
+  const discoveryMs = Date.now() - discoveryStartMs;
 
   const existingHistory = await prisma.spreadsheetImportBatch.findFirst({
     where: { spreadsheetId: record.spreadsheetId },
@@ -1275,6 +1281,22 @@ async function stageDriveSpreadsheetToStaging(input: {
   let skippedRowCount = 0;
   let validWorksheetCount = 0;
 
+  // ── TIMING: per-phase accumulators
+  let totalAiMs = 0;          // sum of AI analysis time across all worksheets
+  let totalDetMs = 0;         // sum of deterministic extraction time across all rows
+  let totalNormMs = 0;        // sum of normalization time (buildAiParsedRow + buildNormalizedPayload)
+  let totalNormalizationLookupMs = 0; // sum of source-link / equivalence DB lookups per row
+  const worksheetTimings: Array<{
+    worksheetName: string;
+    aiMs: number;
+    headerMs: number;
+    rowCount: number;
+    detMs: number;
+    normMs: number;
+    lookupMs: number;
+    totalMs: number;
+  }> = [];
+
   logEvent("info", "Parsing spreadsheet rows for staging", {
     driveFileId: record.driveFileId,
     spreadsheetId: record.spreadsheetId,
@@ -1294,12 +1316,23 @@ async function stageDriveSpreadsheetToStaging(input: {
       continue;
     }
 
+    // ── TIMING: per-worksheet start
+    const worksheetStartMs = Date.now();
+    let wsAiMs = 0;
+    let wsHeaderMs = 0;
+    let wsDetMs = 0;
+    let wsNormMs = 0;
+    let wsLookupMs = 0;
+
+    const aiStartMs = Date.now();
     const analysis = await analyzeSheetWithAI({
       spreadsheetName: record.spreadsheetName,
       sheetName: worksheet.worksheetName,
       rows: worksheet.rows,
       detectedHeaders: worksheet.detectedHeaders,
     });
+    wsAiMs = Date.now() - aiStartMs;
+    totalAiMs += wsAiMs;
 
     logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] worksheet:start", {
       spreadsheetId: record.spreadsheetId,
@@ -1308,6 +1341,7 @@ async function stageDriveSpreadsheetToStaging(input: {
       parsedRows: analysis.rows.length,
       tableDetected: analysis.tableDetected,
       detectedHeaders: worksheet.detectedHeaders,
+      timing: { aiMs: wsAiMs },
     });
 
     if (!analysis.tableDetected) {
@@ -1320,14 +1354,22 @@ async function stageDriveSpreadsheetToStaging(input: {
     }
 
     validWorksheetCount += 1;
+    const headerStartMs = Date.now();
     const headerContext = resolveWorksheetHeaderContext(worksheet, analysis);
+    wsHeaderMs = Date.now() - headerStartMs;
     const usedWorksheetRowNumbers = new Set<number>();
 
     for (const aiRow of analysis.rows) {
       detectedRowCount += 1;
       const aiReasoning = buildAiReasoning(aiRow);
       const rawRowAtReportedIndex = worksheet.rows[aiRow.rowIndex - 1] ?? [];
+
+      // ── TIMING: deterministic extraction
+      const detStartMs = Date.now();
       const det = extractColumnarRowFields(headerContext.colMap, rawRowAtReportedIndex);
+      const rowDetMs = Date.now() - detStartMs;
+      wsDetMs += rowDetMs;
+
       // Stable row ID derived from worksheet + reported AI row index (before reconciliation).
       // Used for both skipped trace records and qualified rows.
       const deterministicRowId = buildDeterministicRowId({
@@ -1441,6 +1483,8 @@ async function stageDriveSpreadsheetToStaging(input: {
 
       usedWorksheetRowNumbers.add(resolvedRow.rowNumber);
 
+      // ── TIMING: normalization (buildAiParsedRow = Phase 1+2+3 field resolution)
+      const normStartMs = Date.now();
       const row = buildAiParsedRow({
         worksheet,
         headerContext,
@@ -1448,6 +1492,7 @@ async function stageDriveSpreadsheetToStaging(input: {
         row: aiRow,
         sourceGroup: record.sourceContext.sourceGroup,
       });
+      wsNormMs += Date.now() - normStartMs;
 
       const stagedRow = {
         ...row,
@@ -1458,6 +1503,8 @@ async function stageDriveSpreadsheetToStaging(input: {
         }),
       };
 
+      // ── TIMING: per-row source-link + equivalence lookup (DB reads inside loop)
+      const lookupStartMs = Date.now();
       const exactSourceLink =
         (await prisma.contentSourceLink.findUnique({
           where: {
@@ -1501,6 +1548,7 @@ async function stageDriveSpreadsheetToStaging(input: {
               reasons: [],
               matchType: "NONE" as const,
             };
+      wsLookupMs += Date.now() - lookupStartMs;
 
       const existingContentItemId = exactSourceLink?.contentItemId ?? equivalenceSuggestion.existingContentItemId;
       const conflictConfidence = exactSourceLink?.contentItemId
@@ -1609,6 +1657,35 @@ async function stageDriveSpreadsheetToStaging(input: {
         skippedRowCount += 1;
       }
     }
+
+    // ── TIMING: worksheet totals
+    totalDetMs += wsDetMs;
+    totalNormMs += wsNormMs;
+    totalNormalizationLookupMs += wsLookupMs;
+    const wsTotalMs = Date.now() - worksheetStartMs;
+    worksheetTimings.push({
+      worksheetName: worksheet.worksheetName,
+      aiMs: wsAiMs,
+      headerMs: wsHeaderMs,
+      rowCount: analysis.rows.length,
+      detMs: wsDetMs,
+      normMs: wsNormMs,
+      lookupMs: wsLookupMs,
+      totalMs: wsTotalMs,
+    });
+    logEvent("info", "[TIMING][STAGE] worksheet:done", {
+      spreadsheetId: record.spreadsheetId,
+      worksheetName: worksheet.worksheetName,
+      timing: {
+        aiMs: wsAiMs,
+        headerMs: wsHeaderMs,
+        rowCount: analysis.rows.length,
+        detMs: wsDetMs,
+        normMs: wsNormMs,
+        lookupMs: wsLookupMs,
+        totalMs: wsTotalMs,
+      },
+    });
   }
 
   const dedupedRows = Array.from(
@@ -1639,6 +1716,8 @@ async function stageDriveSpreadsheetToStaging(input: {
         ? DriveImportBatchStatus.NEEDS_REIMPORT_DECISION
         : DriveImportBatchStatus.STAGED;
 
+  // ── TIMING: persistence (batch create + row createMany)
+  const persistenceStartMs = Date.now();
   const batch = await prisma.spreadsheetImportBatch.create({
     data: {
       importedById: importedById ?? null,
@@ -1688,6 +1767,8 @@ async function stageDriveSpreadsheetToStaging(input: {
       })),
     });
   }
+  const persistenceMs = Date.now() - persistenceStartMs;
+  const batchTotalMs = Date.now() - batchStartMs;
 
   logEvent("info", "Inserted staged spreadsheet rows", {
     batchId: batch.id,
@@ -1706,6 +1787,25 @@ async function stageDriveSpreadsheetToStaging(input: {
     conflictRows: conflictCount,
     alreadyPublishedRowCount,
     rowsInserted: dedupedRows.length,
+    // ── TIMING: full breakdown attached to the terminal event for this batch
+    timing: {
+      batchTotalMs,
+      discoveryMs,
+      aiMs: totalAiMs,
+      detMs: totalDetMs,
+      normMs: totalNormMs,
+      lookupMs: totalNormalizationLookupMs,
+      persistenceMs,
+      unaccountedMs:
+        batchTotalMs -
+        discoveryMs -
+        totalAiMs -
+        totalDetMs -
+        totalNormMs -
+        totalNormalizationLookupMs -
+        persistenceMs,
+      byWorksheet: worksheetTimings,
+    },
   });
 
   const spreadsheet = await prisma.spreadsheetImportBatch.findUnique({
