@@ -44,6 +44,24 @@ import {
   contentIngestionPayloadSchema,
   type ContentIngestionPayload,
 } from "../domain/ingestion-contract";
+import {
+  normalizeComparableText,
+  normalizeHeaderText,
+  scoreComparableText,
+  normalizeBooleanish,
+  X_ACCOUNT_WORKSHEET_PATTERN,
+  isXAccountWorksheet,
+  buildWorksheetColumnMap,
+  extractColumnarRowFields,
+  isRowQueueCandidate as _isRowQueueCandidate,
+  buildFallbackTitle,
+  buildContentSignature as _buildContentSignature,
+  type WorksheetField,
+  type WorksheetColumnMap,
+  type WorksheetExtractedFields,
+  WORKSHEET_FIELD_ALIASES,
+  type AiSemanticFlags,
+} from "./__internal__/queue-helpers";
 
 export type DriveImportScanRequest = {
   query?: string;
@@ -161,46 +179,7 @@ function toSpreadsheetState(status: DriveImportBatchStatus): DriveSpreadsheetSta
   }
 }
 
-function normalizeComparableText(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-// Normalize a raw sheet header for alias matching.
-// Multi-line headers (e.g. "LinkedIn\n(Up to 3000 characters)") collapse to their first line.
-function normalizeHeaderText(header: string): string {
-  const firstLine = header.split(/\r?\n/)[0] ?? header;
-  return firstLine.trim().toLowerCase();
-}
-
-function tokenizeComparableText(value: string) {
-  return normalizeComparableText(value)
-    .split(" ")
-    .filter((token) => token.length > 2);
-}
-
-function scoreComparableText(left: string, right: string) {
-  const leftTokens = new Set(tokenizeComparableText(left));
-  const rightTokens = new Set(tokenizeComparableText(right));
-  if (leftTokens.size === 0 || rightTokens.size === 0) {
-    return 0;
-  }
-
-  let intersection = 0;
-  for (const token of leftTokens) {
-    if (rightTokens.has(token)) {
-      intersection += 1;
-    }
-  }
-
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  return union === 0 ? 0 : intersection / union;
-}
+// normalizeComparableText, normalizeHeaderText, scoreComparableText imported from __internal__/queue-helpers
 
 function inferContentProfileFromSourceGroup(sourceGroup: string): ContentProfile {
   switch (sourceGroup) {
@@ -221,15 +200,13 @@ function inferContentProfileFromSourceGroup(sourceGroup: string): ContentProfile
 }
 
 function buildContentSignature(row: GoogleSheetsParsedRow, sourceGroup: string) {
-  return normalizeComparableText(
-    [
-      sourceGroup,
-      row.planningFields.plannedDate ?? "",
-      row.planningFields.platformLabel ?? "",
-      row.titleDerivation.title,
-      row.planningFields.copyEnglish,
-    ].join(" | "),
-  );
+  return _buildContentSignature({
+    sourceGroup,
+    plannedDate: row.planningFields.plannedDate,
+    platformLabel: row.planningFields.platformLabel,
+    title: row.titleDerivation.title,
+    copyEnglish: row.planningFields.copyEnglish,
+  });
 }
 
 function buildDeterministicRowId(input: {
@@ -251,26 +228,7 @@ function optionalTrimmed(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function normalizeBooleanish(value: string | boolean | undefined | null) {
-  if (typeof value === "boolean") {
-    return value;
-  }
-
-  if (typeof value !== "string") {
-    return false;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  return (
-    normalized === "yes" ||
-    normalized === "true" ||
-    normalized === "published" ||
-    normalized === "done" ||
-    normalized === "complete" ||
-    normalized === "completed" ||
-    normalized === "live"
-  );
-}
+// normalizeBooleanish imported from __internal__/queue-helpers
 
 function buildAiReasoning(row: AiSheetAnalysisRow) {
   return row.semantic.reasoning.length > 0
@@ -291,47 +249,21 @@ function isAiRowQualified(row: AiSheetAnalysisRow) {
   );
 }
 
-// Deterministic worksheet-level exclusion for X/Twitter account tabs.
-// Checked by name before AI analysis so X Account rows never enter the queue.
-const X_ACCOUNT_WORKSHEET_PATTERN =
-  /\b(x\s+account|x\.com|twitter(?:\s*\/?\s*x)?)\b|^\s*x\s*$/i;
+// X_ACCOUNT_WORKSHEET_PATTERN, isXAccountWorksheet, isRowQueueCandidate imported from __internal__/queue-helpers
 
-function isXAccountWorksheet(worksheetName: string): boolean {
-  return X_ACCOUNT_WORKSHEET_PATTERN.test(worksheetName.trim());
-}
-
-// Determines whether a row should be admitted as a queue candidate.
-// Deterministic extraction takes precedence over the AI's platform flags so that
-// Substack, teaser, and brief-only rows in LinkedIn planning worksheets are not
-// incorrectly blocked by the AI's is_non_linkedin_platform / is_empty_or_unusable flags.
-// X Account worksheets are excluded upstream (worksheet-level), so this function
-// only needs to distinguish real editorial rows from decoration/empty rows.
+// Adapter: AiSheetAnalysisRow -> AiSemanticFlags for the shared helper.
 function isRowQueueCandidate(
   aiRow: AiSheetAnalysisRow,
   det: WorksheetExtractedFields,
 ): boolean {
-  // Deterministic qualification: date + at least one real content signal.
-  // Trusted over AI platform flags — a Substack article in a LinkedIn plan is valid work.
-  const detQualified =
-    Boolean(det.plannedDate) &&
-    (Boolean(det.title) || Boolean(det.brief) || Boolean(det.linkedinCopy));
-
-  if (detQualified) {
-    return true;
-  }
-
-  // If AI says the row is genuinely empty/unusable and det found nothing useful, skip it.
-  if (aiRow.semantic.is_empty_or_unusable) {
-    return false;
-  }
-
-  // AI qualification: row has at least one recognizable content signal.
-  return (
-    aiRow.semantic.has_editorial_brief ||
-    aiRow.semantic.has_title ||
-    aiRow.semantic.has_final_copy ||
-    aiRow.semantic.is_published
-  );
+  const flags: AiSemanticFlags = {
+    is_empty_or_unusable: aiRow.semantic.is_empty_or_unusable,
+    has_editorial_brief: aiRow.semantic.has_editorial_brief,
+    has_title: aiRow.semantic.has_title,
+    has_final_copy: aiRow.semantic.has_final_copy,
+    is_published: aiRow.semantic.is_published,
+  };
+  return _isRowQueueCandidate(flags, det);
 }
 
 function deriveAiRowConfidence(row: AiSheetAnalysisRow): "HIGH" | "MEDIUM" | "LOW" {
@@ -400,35 +332,7 @@ function deriveOperationalStatusFromAiRow(input: {
   });
 }
 
-function truncateTitle(value: string, maxLength = 140) {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  return `${value.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-function buildFallbackTitle(input: {
-  title?: string;
-  copy?: string;
-  date?: string;
-  rowNumber: number;
-}) {
-  if (input.title && input.title.trim().length > 0) {
-    return input.title.trim();
-  }
-
-  if (input.copy && input.copy.trim().length > 0) {
-    const [firstLine] = input.copy.trim().split(/\r?\n/);
-    return truncateTitle(firstLine.trim());
-  }
-
-  if (input.date && input.date.trim().length > 0) {
-    return `Planned item - ${input.date.trim()}`;
-  }
-
-  return `Planned item - row ${input.rowNumber}`;
-}
+// buildFallbackTitle imported from __internal__/queue-helpers
 
 function padHeaders(headers: string[], rowValues: string[]) {
   const nextHeaders = [...headers];
@@ -722,76 +626,8 @@ function postAiFilterRow(
   return { allowed: true };
 }
 
-// Canonical worksheet field identifiers used throughout the import pipeline.
-type WorksheetField =
-  | "plannedDate"
-  | "title"
-  | "publishedFlag"
-  | "platformLabel"
-  | "linkedinCopy"
-  | "brief"
-  | "publishedPostUrl"
-  | "contentDeadline";
-
-// Aliases for each canonical field.  Values are matched against normalizeHeaderText() output
-// so they must already be lowercase/trimmed.  First-match-wins per column.
-const WORKSHEET_FIELD_ALIASES: Record<WorksheetField, string[]> = {
-  plannedDate:      ["date", "planned date"],
-  title:            ["title", "post title", "headline", "campaign"],
-  publishedFlag:    ["published", "status", "posted"],
-  platformLabel:    ["platform", "channel", "account", "person"],
-  linkedinCopy:     ["linkedin copy", "linkedin", "linkedin - up to 3000 characters", "copy", "copy (en)", "english copy"],
-  brief:            ["copywriter brief", "topic", "idea", "theme", "briefing", "instructions", "notes", "notes for copywriter"],
-  publishedPostUrl: ["link to the post", "link to the comments", "post link"],
-  contentDeadline:  ["deadline", "content deadline"],
-};
-
-// Maps each resolved WorksheetField to the column index in this worksheet's header row.
-// Built once per worksheet; undefined means no column matched that field.
-type WorksheetColumnMap = Partial<Record<WorksheetField, number>>;
-
-// Per-row extraction result: only fields whose column exists AND whose cell is non-empty.
-type WorksheetExtractedFields = Partial<Record<WorksheetField, string>>;
-
-// Build the column map for a worksheet by scanning its resolved header array once.
-function buildWorksheetColumnMap(headers: string[]): WorksheetColumnMap {
-  const colMap: WorksheetColumnMap = {};
-
-  for (let i = 0; i < headers.length; i++) {
-    const headerNorm = normalizeHeaderText(headers[i]);
-    if (!headerNorm) {
-      continue;
-    }
-
-    for (const [field, aliases] of Object.entries(WORKSHEET_FIELD_ALIASES) as [WorksheetField, string[]][]) {
-      if (colMap[field] !== undefined) {
-        continue; // first matching column wins
-      }
-      if (aliases.includes(headerNorm)) {
-        colMap[field] = i;
-      }
-    }
-  }
-
-  return colMap;
-}
-
-// Extract canonical field values for a single row using the pre-built worksheet column map.
-function extractColumnarRowFields(
-  colMap: WorksheetColumnMap,
-  rowValues: string[],
-): WorksheetExtractedFields {
-  const result: WorksheetExtractedFields = {};
-
-  for (const [field, colIndex] of Object.entries(colMap) as [WorksheetField, number][]) {
-    const cellValue = rowValues[colIndex]?.trim();
-    if (cellValue) {
-      result[field] = cellValue;
-    }
-  }
-
-  return result;
-}
+// WorksheetField, WORKSHEET_FIELD_ALIASES, WorksheetColumnMap, WorksheetExtractedFields,
+// buildWorksheetColumnMap, extractColumnarRowFields imported from __internal__/queue-helpers
 
 function buildAiParsedRow(input: {
   worksheet: GoogleSheetsRawWorksheetImport;
