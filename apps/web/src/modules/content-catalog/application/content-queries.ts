@@ -2,6 +2,7 @@ import { DesignProvider, Prisma } from "@prisma/client";
 import { notFound } from "next/navigation";
 import { getPrisma } from "@/shared/lib/prisma";
 import { logEvent } from "@/shared/logging/logger";
+import { withoutDeleted } from "@/shared/lib/soft-delete";
 
 const queueContentItemArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()({
   include: {
@@ -10,6 +11,7 @@ const queueContentItemArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()({
       take: 1,
     },
     designRequests: {
+      where: { deletedAt: null },
       orderBy: [{ attemptNumber: "desc" }, { updatedAt: "desc" }],
       take: 1,
       include: {
@@ -21,10 +23,12 @@ const queueContentItemArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()({
       take: 1,
     },
     statusEvents: {
+      where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
       take: 1,
     },
     assets: {
+      where: { deletedAt: null },
       orderBy: [{ slideIndex: "asc" }, { createdAt: "desc" }],
       take: 1,
     },
@@ -43,27 +47,32 @@ const contentItemDetailArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()(
       orderBy: { receivedAt: "desc" },
     },
     notes: {
+      where: { deletedAt: null },
       include: {
         author: true,
       },
       orderBy: { createdAt: "desc" },
     },
     approvals: {
+      where: { deletedAt: null },
       include: {
         actor: true,
       },
       orderBy: { createdAt: "desc" },
     },
     statusEvents: {
+      where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
     },
     designRequests: {
+      where: { deletedAt: null },
       orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
       include: {
         profileMapping: true,
       },
     },
     assets: {
+      where: { deletedAt: null },
       orderBy: [{ slideIndex: "asc" }, { createdAt: "asc" }],
     },
   },
@@ -93,6 +102,7 @@ export type ContentItemDetail = BaseContentItemDetail & {
 export async function listQueueContentItems(): Promise<QueueContentItem[]> {
   const prisma = getPrisma();
   const items = await prisma.contentItem.findMany({
+    where: withoutDeleted({}),
     ...queueContentItemArgs,
     orderBy: [{ latestImportAt: "desc" }, { updatedAt: "desc" }],
   });
@@ -182,8 +192,8 @@ export async function listQueueContentItems(): Promise<QueueContentItem[]> {
 
 export async function getContentItemDetail(contentItemId: string): Promise<ContentItemDetail> {
   const prisma = getPrisma();
-  const item = await prisma.contentItem.findUnique({
-    where: { id: contentItemId },
+  const item = await prisma.contentItem.findFirst({
+    where: withoutDeleted({ id: contentItemId }),
     ...contentItemDetailArgs,
   });
 

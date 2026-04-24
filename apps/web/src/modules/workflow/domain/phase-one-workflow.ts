@@ -4,6 +4,7 @@ export const PHASE_ONE_WORKFLOW_VERSION = "phase-1.0";
 
 const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
   // ── New intake ──────────────────────────────────────────────────────────
+  [ContentStatus.BLOCKED]: [ContentStatus.READY_FOR_DESIGN],
   [ContentStatus.WAITING_FOR_COPY]: [ContentStatus.READY_FOR_DESIGN],
   [ContentStatus.READY_FOR_DESIGN]: [
     ContentStatus.IN_DESIGN,
@@ -13,6 +14,7 @@ const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
 
   // ── New design ──────────────────────────────────────────────────────────
   [ContentStatus.IN_DESIGN]: [
+    ContentStatus.READY_FOR_DESIGN,
     ContentStatus.DESIGN_READY,
     ContentStatus.DESIGN_FAILED,
     ContentStatus.DESIGN_IN_PROGRESS, // legacy compat
@@ -51,6 +53,7 @@ const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
   ],
   [ContentStatus.DESIGN_READY]: [ContentStatus.DESIGN_APPROVED, ContentStatus.CHANGES_REQUESTED],
   [ContentStatus.DESIGN_APPROVED]: [
+    ContentStatus.READY_FOR_DESIGN,
     ContentStatus.TRANSLATION_REQUESTED,
     ContentStatus.TRANSLATION_PENDING, // legacy
     ContentStatus.READY_FOR_FINAL_REVIEW,
@@ -67,6 +70,7 @@ const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
     ContentStatus.IN_REVIEW,
     ContentStatus.CHANGES_REQUESTED,
     ContentStatus.CONTENT_APPROVED,
+    ContentStatus.BLOCKED,
     ContentStatus.WAITING_FOR_COPY,
     ContentStatus.READY_FOR_DESIGN,
   ],
@@ -74,6 +78,7 @@ const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
     ContentStatus.CHANGES_REQUESTED,
     ContentStatus.CONTENT_APPROVED,
     ContentStatus.READY_FOR_DESIGN,
+    ContentStatus.BLOCKED,
     ContentStatus.WAITING_FOR_COPY,
   ],
   [ContentStatus.CONTENT_APPROVED]: [

@@ -5,7 +5,10 @@ import {
   titleDerivationStrategySchema,
   worksheetSelectionStrategySchema,
 } from "./sheet-profiles";
-import { operationalContentStatusSchema } from "./infer-content-status";
+import {
+  operationalContentStatusSchema,
+  workflowBlockReasonSchema,
+} from "./infer-content-status";
 
 export const contentTypeSchema = z.enum(["STATIC_POST", "CAROUSEL"]);
 export const orchestratorTypeSchema = z.enum(["ZAPIER", "N8N", "MANUAL"]);
@@ -28,21 +31,14 @@ const worksheetSelectionSchema = z.object({
 
 const normalizedPlanningFieldsSchema = z.object({
   plannedDate: z.string().min(1).optional(),
-  platformLabel: z.string().min(1).optional(),
   campaignLabel: z.string().min(1).optional(),
   copyEnglish: z.string(),
-  copyPortuguese: z.string().min(1).optional(),
   sourceAssetLink: z.string().min(1).optional(),
   contentDeadline: z.string().min(1).optional(),
-  ideaOrBrief: z.string().min(1).optional(),
 });
 
 const sourceMetadataSchema = z.object({
   publishedFlag: z.union([z.string(), z.boolean()]).optional(),
-  publishedPostUrl: z.string().min(1).optional(),
-  outreachAccount: z.string().min(1).optional(),
-  outreachCopy: z.string().min(1).optional(),
-  extra: z.record(z.string(), z.unknown()).default({}),
 });
 
 const pushbackCandidatesSchema = z.object({
@@ -56,13 +52,14 @@ const pushbackCandidatesSchema = z.object({
 const workflowIntentSchema = z.object({
   translationRequired: z.boolean().default(false),
   autoPostEnabled: z.boolean().default(false),
-  preferredDesignProvider: z.enum(["CANVA", "AI_VISUAL", "MANUAL"]).default("CANVA"),
+  preferredDesignProvider: z.enum(["CANVA", "GPT_IMAGE", "AI_VISUAL", "MANUAL"]).default("CANVA"),
   reimportStrategy: z.enum(["UPDATE", "REPLACE", "KEEP_AS_IS"]).default("UPDATE"),
   equivalenceTargetContentItemId: z.string().min(1).optional(),
   conflictConfidence: z.enum(["HIGH_CONFIDENCE_DUPLICATE", "POSSIBLE_DUPLICATE", "NO_MEANINGFUL_MATCH"]).default(
     "NO_MEANINGFUL_MATCH",
   ),
   operationalStatus: operationalContentStatusSchema.optional(),
+  blockReason: workflowBlockReasonSchema.optional(),
 });
 
 export const contentIngestionPayloadSchema = z.object({
@@ -122,6 +119,7 @@ export const contentIngestionPayloadSchema = z.object({
       strategy: titleDerivationStrategySchema,
       sourceField: z.string().min(1).optional(),
       title: z.string().min(1),
+      titleDerivedFromBrief: z.boolean().optional(),
     }),
   }),
   planning: normalizedPlanningFieldsSchema,

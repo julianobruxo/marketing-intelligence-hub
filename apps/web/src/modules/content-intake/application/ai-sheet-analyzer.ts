@@ -2,13 +2,13 @@ import "server-only";
 
 import { z } from "zod";
 import { getOpenAIClient } from "@/lib/openai-client";
+import { DRIVE_PROVIDER_MODE } from "@/shared/config/env";
 import { logEvent } from "@/shared/logging/logger";
 
 const aiSheetColumnValueSchema = z.string().nullable();
 
 const aiSheetColumnsSchema = z.object({
   date: aiSheetColumnValueSchema,
-  ideaOrBrief: aiSheetColumnValueSchema,
   title: aiSheetColumnValueSchema,
   copy: aiSheetColumnValueSchema,
   deadline: aiSheetColumnValueSchema,
@@ -18,7 +18,6 @@ const aiSheetColumnsSchema = z.object({
 
 const aiSheetRowDataSchema = z.object({
   date: aiSheetColumnValueSchema,
-  ideaOrBrief: aiSheetColumnValueSchema,
   title: aiSheetColumnValueSchema,
   copy: aiSheetColumnValueSchema,
   deadline: aiSheetColumnValueSchema,
@@ -27,7 +26,6 @@ const aiSheetRowDataSchema = z.object({
 });
 
 const aiSheetRowSemanticSchema = z.object({
-  has_editorial_brief: z.boolean(),
   has_title: z.boolean(),
   has_final_copy: z.boolean(),
   is_published: z.boolean(),
@@ -65,14 +63,13 @@ const AI_SHEET_ANALYSIS_SCHEMA = {
       additionalProperties: false,
       properties: {
         date: { type: ["string", "null"] },
-        ideaOrBrief: { type: ["string", "null"] },
         title: { type: ["string", "null"] },
         copy: { type: ["string", "null"] },
         deadline: { type: ["string", "null"] },
         published: { type: ["string", "null"] },
         channel: { type: ["string", "null"] },
       },
-      required: ["date", "ideaOrBrief", "title", "copy", "deadline", "published", "channel"],
+      required: ["date", "title", "copy", "deadline", "published", "channel"],
     },
     rows: {
       type: "array",
@@ -86,20 +83,18 @@ const AI_SHEET_ANALYSIS_SCHEMA = {
             additionalProperties: false,
             properties: {
               date: { type: ["string", "null"] },
-              ideaOrBrief: { type: ["string", "null"] },
               title: { type: ["string", "null"] },
               copy: { type: ["string", "null"] },
               deadline: { type: ["string", "null"] },
               published: { type: ["string", "null"] },
               channel: { type: ["string", "null"] },
             },
-            required: ["date", "ideaOrBrief", "title", "copy", "deadline", "published", "channel"],
+            required: ["date", "title", "copy", "deadline", "published", "channel"],
           },
           semantic: {
             type: "object",
             additionalProperties: false,
             properties: {
-              has_editorial_brief: { type: "boolean" },
               has_title: { type: "boolean" },
               has_final_copy: { type: "boolean" },
               is_published: { type: "boolean" },
@@ -115,7 +110,6 @@ const AI_SHEET_ANALYSIS_SCHEMA = {
               },
             },
             required: [
-              "has_editorial_brief",
               "has_title",
               "has_final_copy",
               "is_published",
@@ -165,14 +159,10 @@ Do NOT produce entries for:
 
 # STRICT FIELD MAPPING RULES
 
-## data.ideaOrBrief
-Map here: Task, Topic, Idea, Theme, Briefing, Instructions, Notes, Notes for copywriter.
-This field holds guidance, outlines, and category signals. It is NEVER final copy.
-
 ## data.title
 Map here ONLY when the cell contains a specific content-item title — a name that identifies this particular piece of content.
 Do NOT map here when the cell contains a generic topic or category label such as "News/Updates", "Industry Insight", "Thought Leadership", "Personal Story", or any other categorical phrase that classifies many posts.
-If the AI-detected "title" value is short (40 characters or fewer), contains no sentence-ending punctuation, and looks like a category or theme label, it belongs in ideaOrBrief instead — set title to null for that row.
+If a cell value is short (40 characters or fewer), contains no sentence-ending punctuation, and looks like a category or theme label, set title to null for that row.
 
 ## data.copy
 Map here ONLY when the cell contains polished, publication-ready body text — the actual LinkedIn post text.
@@ -198,10 +188,6 @@ The published/posted marker or direct post URL, if present.
 The distribution platform. Extract as-is from the channel/platform cell.
 
 # SEMANTIC FLAG RULES
-
-## has_editorial_brief
-true when ideaOrBrief contains actual guidance, instructions, or a topic signal.
-false when ideaOrBrief is empty or null.
 
 ## has_title
 true when data.title contains a specific content-item title (not a category label).
@@ -251,17 +237,55 @@ Output constraints:
 - Be conservative. When in doubt, needs_human_review = true.
 `;
 
+function sanitizeCellValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+
+  return String(value)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .slice(0, 10000)
+    .trim();
+}
+
 function normalizeRows(rows: string[][]) {
-  return rows.map((row) => row.map((cell) => `${cell ?? ""}`));
+  return rows.map((row) => row.map((cell) => sanitizeCellValue(cell)));
+}
+
+function buildEmptyAnalysisResult(): AiSheetAnalysisResult {
+  return {
+    tableDetected: false,
+    columns: {
+      date: null,
+      title: null,
+      copy: null,
+      deadline: null,
+      published: null,
+      channel: null,
+    },
+    rows: [],
+  };
+}
+
+function safeJsonParse<T>(raw: string, fallback: T): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    logEvent("error", "[IMPORT] JSON parse failed", {
+      error: error instanceof Error ? error.message : String(error),
+      preview: raw.slice(0, 200),
+    });
+    return fallback;
+  }
 }
 
 function buildUserPayload(input: AiSheetAnalyzerInput) {
   return JSON.stringify(
     {
       todayDate: new Date().toISOString().slice(0, 10),
-      spreadsheetName: input.spreadsheetName,
-      sheetName: input.sheetName,
-      detectedHeaders: input.detectedHeaders ?? null,
+      spreadsheetName: sanitizeCellValue(input.spreadsheetName),
+      sheetName: sanitizeCellValue(input.sheetName),
+      detectedHeaders: input.detectedHeaders?.map((header) => sanitizeCellValue(header)) ?? null,
       rawRows: normalizeRows(input.rows),
     },
     null,
@@ -283,7 +307,6 @@ function countAcceptedRows(parsed: AiSheetAnalysisResult) {
     }
 
     return (
-      row.semantic.has_editorial_brief ||
       row.semantic.has_title ||
       row.semantic.has_final_copy ||
       row.semantic.is_published
@@ -291,7 +314,135 @@ function countAcceptedRows(parsed: AiSheetAnalysisResult) {
   }).length;
 }
 
+function normalizeCellText(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function findHeaderIndex(headers: string[], aliases: string[]) {
+  const normalizedAliases = aliases.map((alias) => normalizeCellText(alias).toLowerCase());
+
+  return headers.findIndex((header) => {
+    const normalizedHeader = normalizeCellText(header).toLowerCase();
+    return normalizedAliases.some(
+      (alias) => normalizedHeader === alias || normalizedHeader.includes(alias) || alias.includes(normalizedHeader),
+    );
+  });
+}
+
+function buildMockAnalysisResult(input: AiSheetAnalyzerInput): AiSheetAnalysisResult {
+  const headers = input.detectedHeaders?.map((header) => sanitizeCellValue(header)) ?? normalizeRows([input.rows[0] ?? []])[0] ?? [];
+  const dataRows = normalizeRows(input.rows.slice(1));
+
+  const columnIndexes = {
+    date: findHeaderIndex(headers, ["Date", "Planned date"]),
+    title: findHeaderIndex(headers, ["Campaign", "Title", "Headline", "Post title"]),
+    copy: findHeaderIndex(headers, ["LinkedIn Copy", "Copy", "English copy"]),
+    deadline: findHeaderIndex(headers, ["Content Deadline", "Deadline", "Due date"]),
+    published: findHeaderIndex(headers, ["Published", "Status", "Posted"]),
+    channel: findHeaderIndex(headers, ["Platform", "Channel", "Account", "Person"]),
+  };
+
+  const columns = {
+    date: columnIndexes.date >= 0 ? headers[columnIndexes.date] ?? null : null,
+    title: columnIndexes.title >= 0 ? headers[columnIndexes.title] ?? null : null,
+    copy: columnIndexes.copy >= 0 ? headers[columnIndexes.copy] ?? null : null,
+    deadline: columnIndexes.deadline >= 0 ? headers[columnIndexes.deadline] ?? null : null,
+    published: columnIndexes.published >= 0 ? headers[columnIndexes.published] ?? null : null,
+    channel: columnIndexes.channel >= 0 ? headers[columnIndexes.channel] ?? null : null,
+  };
+
+  const rows = dataRows.map((rowValues, offset) => {
+    const rowIndex = offset + 2;
+    const normalizedValues = rowValues.map((value) => normalizeCellText(value));
+    const joined = normalizedValues.join(" ").trim();
+    const isSkipRow = !joined || /^(week\s*\d+|hashtags?|qr code|notes?|helper|links?)\b/i.test(joined);
+
+    if (isSkipRow) {
+      return {
+        rowIndex,
+        data: {
+          date: null,
+          title: null,
+          copy: null,
+          deadline: null,
+          published: null,
+          channel: null,
+        },
+        semantic: {
+          has_title: false,
+          has_final_copy: false,
+          is_published: false,
+          has_design_evidence: false,
+          is_overdue: null,
+          is_empty_or_unusable: true,
+          is_non_linkedin_platform: false,
+          copy_language_is_fallback: false,
+          needs_human_review: false,
+          reasoning: ["Mock analyzer marked this as a non-data row."],
+        },
+      };
+    }
+
+    const readCell = (index: number) => (index >= 0 ? normalizedValues[index] ?? null : null);
+    const date = readCell(columnIndexes.date);
+    const title = readCell(columnIndexes.title);
+    const copy = readCell(columnIndexes.copy);
+    const deadline = readCell(columnIndexes.deadline);
+    const published = readCell(columnIndexes.published);
+    const channel = readCell(columnIndexes.channel);
+    const hasDesignEvidence = normalizedValues.some((value) => /https?:\/\/|canva/i.test(value));
+    const isPublished = Boolean(published && /yes|posted|done|complete|completed|live/i.test(published));
+    const isOverdue = deadline ? (Number.isNaN(new Date(deadline).getTime()) ? null : new Date(deadline).getTime() < Date.now()) : null;
+
+    return {
+      rowIndex,
+      data: {
+        date,
+        title,
+        copy,
+        deadline,
+        published,
+        channel,
+      },
+      semantic: {
+        has_title: Boolean(title),
+        has_final_copy: Boolean(copy && copy.length >= 40),
+        is_published: isPublished,
+        has_design_evidence: hasDesignEvidence,
+        is_overdue: isOverdue,
+        is_empty_or_unusable: false,
+        is_non_linkedin_platform: Boolean(channel && !/linkedin/i.test(channel)),
+        copy_language_is_fallback: false,
+        needs_human_review: Boolean(!title || !copy || copy.length < 40),
+        reasoning: [
+          "Mock analyzer inferred the row from the local workbook fixture.",
+          joined.length > 0 ? "Row contained operational content." : "Row contained no usable content.",
+        ],
+      },
+    };
+  }) satisfies AiSheetAnalysisResult["rows"];
+
+  return {
+    tableDetected: rows.length > 0,
+    columns,
+    rows,
+  };
+}
+
 export async function analyzeSheetWithAI(input: AiSheetAnalyzerInput): Promise<AiSheetAnalysisResult> {
+  if (DRIVE_PROVIDER_MODE === "MOCK") {
+    const parsed = aiSheetAnalysisResultSchema.parse(buildMockAnalysisResult(input));
+
+    logEvent("info", "[TRACE_IMPORT_QUEUE][AI_ANALYZER] mock", {
+      spreadsheetName: input.spreadsheetName,
+      sheetName: input.sheetName,
+      tableDetected: parsed.tableDetected,
+      analyzedRows: parsed.rows.length,
+    });
+
+    return parsed;
+  }
+
   const openai = getOpenAIClient();
 
   logEvent("info", "[TRACE_IMPORT_QUEUE][AI_ANALYZER] start", {
@@ -327,7 +478,20 @@ export async function analyzeSheetWithAI(input: AiSheetAnalyzerInput): Promise<A
     },
   });
 
-  const parsed = aiSheetAnalysisResultSchema.parse(JSON.parse(response.output_text));
+  const rawParsed = safeJsonParse<unknown>(response.output_text, null);
+  const parsedResult = aiSheetAnalysisResultSchema.safeParse(rawParsed);
+
+  if (!parsedResult.success) {
+    logEvent("error", "[TRACE_IMPORT_QUEUE][AI_ANALYZER] schema-parse-failed", {
+      spreadsheetName: input.spreadsheetName,
+      sheetName: input.sheetName,
+      error: parsedResult.error.message,
+      preview: response.output_text.slice(0, 200),
+    });
+    return buildEmptyAnalysisResult();
+  }
+
+  const parsed = parsedResult.data;
   const reviewRows = parsed.rows.filter((row) => row.semantic.needs_human_review).length;
   const acceptedRows = countAcceptedRows(parsed);
 

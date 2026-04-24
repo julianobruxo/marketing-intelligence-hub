@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, EyeOff, Image as ImageIcon } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { getPublishedPreview } from "@/modules/content-catalog/application/content-preview";
 import {
+  isDesignRejection,
   getSemanticWorkflowDecision,
   getShortActionPhrase,
 } from "@/modules/content-catalog/application/content-workflow-view-model";
@@ -15,14 +17,13 @@ import type {
   QueueLaneSection,
 } from "@/modules/content-catalog/application/content-workflow-view-model";
 import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-intake/domain/infer-content-status";
-import { formatOperationalLabel } from "@/shared/ui/operational-status";
-import { PreviewFallback } from "@/shared/ui/preview-fallback";
+import { formatOperationalLabel, getQueueStatePresentation } from "@/shared/ui/operational-status";
 import { StatusBadge } from "@/shared/ui/status-badge";
 
 type DecoratedItem = QueueLaneSection["items"][number];
 type LaneTab = QueueLane | "ALL";
 
-const LANE_ORDER: QueueLane[] = ["NEEDS_ACTION", "FAILED", "BLOCKED", "IN_PROGRESS", "READY"];
+const LANE_ORDER: QueueLane[] = ["NEEDS_ACTION", "BLOCKED", "FAILED", "IN_PROGRESS", "READY"];
 
 const LANE_TAB_META: Record<
   LaneTab,
@@ -45,11 +46,11 @@ const LANE_TAB_META: Record<
   },
   NEEDS_ACTION: {
     label: "Action",
-    accentClass: "text-[#E8584A] dark:text-orange-400",
+    accentClass: "text-violet-700 dark:text-violet-400",
     idleClass:
-      "border-[#F6D5CF] bg-[linear-gradient(180deg,rgba(255,247,245,0.98),rgba(254,237,233,0.95))] text-[#9A3412] hover:border-[#F1B8AB] hover:bg-[linear-gradient(180deg,rgba(255,244,241,0.99),rgba(254,228,222,0.96))] dark:border-[rgba(249,115,22,0.2)] dark:bg-[linear-gradient(180deg,rgba(45,20,8,0.95),rgba(55,25,8,0.92))] dark:text-orange-300 dark:hover:border-[rgba(249,115,22,0.32)] dark:hover:bg-[linear-gradient(180deg,rgba(50,22,8,0.98),rgba(62,28,8,0.96))]",
+      "border-violet-200/85 bg-[linear-gradient(180deg,rgba(250,245,255,0.98),rgba(243,232,255,0.92))] text-violet-800 hover:border-violet-300 hover:bg-[linear-gradient(180deg,rgba(248,245,255,1),rgba(237,233,254,0.94))] dark:border-[rgba(139,92,246,0.2)] dark:bg-[linear-gradient(180deg,rgba(22,12,48,0.95),rgba(30,15,60,0.92))] dark:text-violet-300 dark:hover:border-[rgba(139,92,246,0.3)] dark:hover:bg-[linear-gradient(180deg,rgba(25,14,54,0.98),rgba(35,18,68,0.96))]",
     activeClass:
-      "border-transparent bg-[linear-gradient(135deg,rgba(232,88,74,1),rgba(245,129,93,0.96))] text-white shadow-[0_18px_42px_-28px_rgba(232,88,74,0.9)]",
+      "border-violet-300/20 bg-[linear-gradient(135deg,rgba(109,40,217,0.94),rgba(124,58,237,0.9))] text-white shadow-[0_18px_40px_-28px_rgba(109,40,217,0.6)]",
     countClass: "bg-white/18 text-white",
   },
   FAILED: {
@@ -71,7 +72,7 @@ const LANE_TAB_META: Record<
     countClass: "bg-black/12 text-slate-950",
   },
   IN_PROGRESS: {
-    label: "In Motion",
+    label: "PA",
     accentClass: "text-sky-600 dark:text-sky-400",
     idleClass:
       "border-sky-200/80 bg-[linear-gradient(180deg,rgba(245,251,255,0.98),rgba(224,242,254,0.92))] text-sky-800 hover:border-sky-300 hover:bg-[linear-gradient(180deg,rgba(240,249,255,1),rgba(219,234,254,0.94))] dark:border-[rgba(56,189,248,0.15)] dark:bg-[linear-gradient(180deg,rgba(8,18,40,0.95),rgba(8,24,50,0.92))] dark:text-sky-300 dark:hover:border-[rgba(56,189,248,0.25)] dark:hover:bg-[linear-gradient(180deg,rgba(8,22,48,0.98),rgba(8,28,58,0.96))]",
@@ -105,6 +106,18 @@ function formatProfileLabel(profile: string): string {
     default:
       return profile.toLowerCase().replaceAll("_", " ");
   }
+}
+
+/**
+ * Extracts the owner name from a spreadsheet name following the "SMM Plan | Owner Name" convention.
+ * This is the authoritative source for owner identity — avoids profile-enum guesses.
+ */
+function extractOwnerFromSpreadsheetName(spreadsheetName: string | null): string | null {
+  if (!spreadsheetName) return null;
+  const pipeIndex = spreadsheetName.indexOf("|");
+  if (pipeIndex === -1) return null;
+  const owner = spreadsheetName.slice(pipeIndex + 1).trim();
+  return owner.length > 0 ? owner : null;
 }
 
 function profileBadgeStyle(profile: string): CSSProperties {
@@ -250,6 +263,7 @@ function isPublishedItem(item: DecoratedItem) {
 
   const operationalStatus = getOperationalStatusLabel(item);
   return (
+    operationalStatus === "POSTED" ||
     operationalStatus === "PUBLISHED" ||
     item.currentStatus === "PUBLISHED_MANUALLY" ||
     item.currentStatus === "POSTED"
@@ -277,11 +291,22 @@ function isAwaitingDesignRow(
     return semanticDecision.baseVisualFamily === "lavender";
   }
 
+  const activePurpleStatuses = new Set([
+    "READY_FOR_DESIGN",
+    "IN_DESIGN",
+    "DESIGN_READY",
+    "DESIGN_APPROVED",
+    "CONTENT_APPROVED",
+  ]);
+
   return (
     !isQuietRow(item, semanticDecision) &&
     (nextAction === "Generate Design" ||
-      primaryStatus === "READY_FOR_DESIGN" ||
-      item.currentStatus === "CONTENT_APPROVED")
+      nextAction === "In Design" ||
+      nextAction === "Approve Design" ||
+      nextAction === "Pending Approval" ||
+      activePurpleStatuses.has(primaryStatus) ||
+      activePurpleStatuses.has(item.currentStatus))
   );
 }
 
@@ -408,13 +433,18 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
   const delay = Math.min(index * 28, 280);
   const semanticDecision = getSemanticWorkflowDecision(item);
   const operationalStatus = getOperationalStatusLabel(item);
-  const primaryStatus = semanticDecision?.statusKey ?? operationalStatus ?? item.currentStatus;
+  const primaryStatus = isDesignRejection(item)
+    ? item.currentStatus
+    : semanticDecision?.statusKey ?? operationalStatus ?? item.currentStatus;
   const planning = getPlanningDetails(item);
   const itemDate = getItemDate(item);
   const nextAction = getQueueActionLabel(item);
   const publishedPreview = isPublishedItem(item)
     ? getPublishedPreview({ planningSnapshot: item.planningSnapshot, assets: item.assets })
     : null;
+  const queueState = getQueueStatePresentation(
+    isPublishedItem(item) ? "POSTED" : operationalStatus ?? semanticDecision?.statusKey ?? item.currentStatus,
+  );
   const quietRow = isQuietRow(item, semanticDecision);
   const awaitingDesign = isAwaitingDesignRow(item, semanticDecision, nextAction, primaryStatus);
   const hasOverdueOverlay = semanticDecision?.overdueOverlay ?? primaryStatus === "LATE";
@@ -423,6 +453,7 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
   return (
     <Link
       href={`/queue/${item.id}`}
+      data-testid="queue-item"
       className={cn(
         "queue-row group relative block border-b border-slate-200/70 px-3 py-2.5 last:border-b-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0A66C2] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50 sm:px-4 dark:border-[rgba(99,102,241,0.08)] dark:focus-visible:ring-indigo-400 dark:focus-visible:ring-offset-[#060B18]",
         getRowStateClass(item, quietRow, awaitingDesign),
@@ -436,36 +467,17 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
           getRowSurfaceClasses(item, quietRow, awaitingDesign),
         )}
       >
-        <div className="flex items-start gap-2.5 sm:w-[4.5rem] sm:flex-col">
+        <div className="flex items-start gap-2.5 sm:flex-col">
           <div className="flex items-center gap-1.5 sm:flex-col sm:items-start">
             <span
               className="inline-flex items-center rounded-full border border-white/80 px-2 py-0.5 text-[10px] font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm dark:border-white/10 dark:opacity-85"
               style={profileBadgeStyle(item.profile)}
             >
-              {formatProfileLabel(item.profile)}
+              {extractOwnerFromSpreadsheetName(getSpreadsheetName(item)) ?? formatProfileLabel(item.profile)}
             </span>
             <span className="text-[10px] font-medium tracking-[0.06em] text-slate-400 uppercase sm:hidden dark:text-slate-600">
               {formatDate(itemDate)}
             </span>
-          </div>
-
-          <div
-            className={cn(
-              "hidden overflow-hidden rounded-[16px] border sm:block",
-              quietRow
-                ? "border-slate-200/80 bg-slate-100/80 dark:border-[rgba(52,211,153,0.12)] dark:bg-[rgba(8,28,18,0.5)]"
-                : "border-white/80 bg-white/80 dark:border-[rgba(99,102,241,0.12)] dark:bg-[rgba(15,23,42,0.5)]",
-            )}
-          >
-            {publishedPreview ? (
-              <img
-                src={publishedPreview.previewUrl}
-                alt={`${item.title} preview`}
-                className={cn("h-[56px] w-[56px] object-cover", quietRow && "opacity-80")}
-              />
-            ) : (
-              <PreviewFallback className="h-[56px] w-[56px]" />
-            )}
           </div>
         </div>
 
@@ -492,18 +504,10 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
               </p>
             </div>
 
-            {semanticDecision ? (
+            {queueState ? (
               <StatusBadge
-                variant={
-                  semanticDecision.baseVisualFamily === "green"
-                    ? "emerald"
-                    : semanticDecision.baseVisualFamily === "amber"
-                      ? "amber"
-                      : semanticDecision.baseVisualFamily === "lavender"
-                        ? "violet"
-                        : "slate"
-                }
-                label={semanticDecision.visibleStatusLabel}
+                variant={queueState.tone}
+                label={queueState.label}
                 size="xs"
                 className="shrink-0"
               />
@@ -593,15 +597,32 @@ function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {
 
 interface QueueTableProps {
   sections: QueueLaneSection[];
-  totalItems: number;
+  canClearQueue: boolean;
 }
 
-export function QueueTable({ sections, totalItems }: QueueTableProps) {
+async function readErrorMessage(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as { error?: string; message?: string } | null;
+    const errorMessage =
+      typeof payload?.error === "string"
+        ? payload.error
+        : typeof payload?.message === "string"
+          ? payload.message
+          : "";
+
+    return errorMessage.trim().length > 0 ? errorMessage : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function QueueTable({ sections, canClearQueue }: QueueTableProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<LaneTab>("ALL");
   const [hidePublished, setHidePublished] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [clearQueueError, setClearQueueError] = useState<string | null>(null);
 
   const allItems: DecoratedItem[] = sections.flatMap((section) => section.items);
   const visibleItems = hidePublished ? allItems.filter((item) => !isPublishedItem(item)) : allItems;
@@ -619,29 +640,72 @@ export function QueueTable({ sections, totalItems }: QueueTableProps) {
   const tabs: LaneTab[] = ["ALL", ...LANE_ORDER];
 
   useEffect(() => {
-    if (!modalOpen) {
+    if (!showConfirm) {
       return;
     }
 
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !clearing) {
-        setModalOpen(false);
+    const onMouseDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest("[data-clear-queue]")) {
+        setShowConfirm(false);
       }
     };
 
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !clearing) {
+        setShowConfirm(false);
+      }
+    };
+
+    document.addEventListener("mousedown", onMouseDown);
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearing, modalOpen]);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [clearing, showConfirm]);
 
   const confirmClearQueue = async () => {
     try {
       setClearing(true);
-      const response = await fetch("/api/queue/clear", { method: "POST" });
-      if (!response.ok) {
+      setClearQueueError(null);
+
+      const tokenResponse = await fetch("/api/queue/clear", {
+        method: "GET",
+        credentials: "same-origin",
+      });
+
+      if (!tokenResponse.ok) {
+        setClearQueueError(await readErrorMessage(tokenResponse, "Unable to request a confirmation token."));
         return;
       }
 
-      setModalOpen(false);
+      const tokenPayload = (await tokenResponse.json().catch(() => null)) as
+        | { confirmationToken?: string }
+        | null;
+      const confirmationToken =
+        typeof tokenPayload?.confirmationToken === "string" ? tokenPayload.confirmationToken.trim() : "";
+
+      if (!confirmationToken) {
+        setClearQueueError("Confirmation token missing.");
+        return;
+      }
+
+      const response = await fetch("/api/queue/clear", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ confirmationToken }),
+      });
+
+      if (!response.ok) {
+        setClearQueueError(await readErrorMessage(response, "Unable to clear the queue."));
+        return;
+      }
+
+      setShowConfirm(false);
+      setClearQueueError(null);
       router.refresh();
     } finally {
       setClearing(false);
@@ -649,8 +713,8 @@ export function QueueTable({ sections, totalItems }: QueueTableProps) {
   };
 
   return (
-    <div className="space-y-3 animate-fade-in-up">
-      <section className="app-surface-panel overflow-hidden rounded-[28px] dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+    <div className="space-y-3 animate-fade-in-up" data-testid="queue-container">
+      <section className="app-surface-panel overflow-visible rounded-[28px] dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
         <div className="border-b border-[var(--surface-border)] px-4 py-3.5 sm:px-5 dark:border-[rgba(99,102,241,0.18)]">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="max-w-xl">
@@ -682,14 +746,64 @@ export function QueueTable({ sections, totalItems }: QueueTableProps) {
                 Hide published
               </button>
 
-              <button
-                type="button"
-                onClick={() => setModalOpen(true)}
-                className="app-control-pill inline-flex min-h-9 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold text-[#4E72AE] transition-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0A66C2] focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:text-[#B7C3E7] dark:focus-visible:ring-indigo-400 dark:focus-visible:ring-offset-[#060B18]"
-                disabled={clearing}
-              >
-                Clean Queue
-              </button>
+              {canClearQueue ? (
+                <div className="relative" data-clear-queue>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClearQueueError(null);
+                      setShowConfirm(true);
+                    }}
+                    className="app-control-pill inline-flex min-h-9 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold text-[#4E72AE] transition-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0A66C2] focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:text-[#B7C3E7] dark:focus-visible:ring-indigo-400 dark:focus-visible:ring-offset-[#060B18]"
+                    disabled={clearing}
+                    aria-expanded={showConfirm}
+                    aria-controls={showConfirm ? "clear-queue-confirm-popover" : undefined}
+                  >
+                    Clean Queue
+                  </button>
+
+                  {showConfirm ? (
+                    <div
+                      id="clear-queue-confirm-popover"
+                      className="absolute right-0 top-full z-50 mt-1 flex w-52 flex-col gap-2 rounded-lg border border-border bg-popover p-3 shadow-md"
+                    >
+                      <p className="text-xs font-medium text-popover-foreground">
+                        Remove all items from queue?
+                      </p>
+                      {clearQueueError ? (
+                        <p className="rounded-md border border-destructive/20 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                          {clearQueueError}
+                        </p>
+                      ) : null}
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            setClearQueueError(null);
+                            setShowConfirm(false);
+                          }}
+                          disabled={clearing}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={confirmClearQueue}
+                          disabled={clearing}
+                        >
+                          {clearing ? "Clearing..." : "Confirm"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -781,47 +895,6 @@ export function QueueTable({ sections, totalItems }: QueueTableProps) {
           </div>
         )}
       </section>
-
-      {modalOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm dark:bg-slate-950/75"
-          role="presentation"
-          onClick={() => setModalOpen(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="clean-queue-title"
-            className="w-full max-w-sm rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.65)] dark:border-[rgba(99,102,241,0.2)] dark:bg-[#0F172A] dark:shadow-[0_30px_80px_-42px_rgba(0,0,0,0.6)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2 id="clean-queue-title" className="text-lg font-semibold tracking-[-0.02em] text-slate-950 dark:text-slate-100">
-              Clear queue?
-            </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-              This removes every item currently in the queue.
-            </p>
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition-default hover:border-slate-300 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0A66C2] focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:text-white dark:focus-visible:ring-indigo-400 dark:focus-visible:ring-offset-[#0F172A]"
-                onClick={() => setModalOpen(false)}
-                disabled={clearing}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-full border border-red-600 bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-default hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-[#0F172A]"
-                onClick={confirmClearQueue}
-                disabled={clearing}
-              >
-                {clearing ? "Clearing..." : "Confirm"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

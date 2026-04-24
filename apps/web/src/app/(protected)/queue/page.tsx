@@ -1,15 +1,18 @@
+import { getCurrentSession } from "@/modules/auth/application/auth-service";
 import { buildQueueSections } from "@/modules/content-catalog/application/content-workflow-view-model";
 import { listQueueContentItems } from "@/modules/content-catalog/application/content-queries";
 import { QueueTable } from "./queue-table";
 
 export default async function QueuePage() {
+  const session = await getCurrentSession();
   const contentItems = await listQueueContentItems();
   const sections = buildQueueSections(contentItems);
   const totalItems = sections.reduce((sum, section) => sum + section.count, 0);
   const activeLanes = sections.filter((section) => section.count > 0).length;
+  const canClearQueue = session?.roles.includes("ADMIN") ?? false;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="queue-page">
       <section className="app-surface-panel overflow-hidden rounded-[26px] px-5 py-4 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))] dark:shadow-[0_24px_64px_-46px_rgba(48,59,134,0.58)]">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="max-w-xl">
@@ -39,7 +42,7 @@ export default async function QueuePage() {
         </div>
       </section>
 
-      <QueueTable sections={sections} totalItems={totalItems} />
+      <QueueTable sections={sections} canClearQueue={canClearQueue} />
     </div>
   );
 }

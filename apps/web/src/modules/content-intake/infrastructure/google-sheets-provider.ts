@@ -6,12 +6,14 @@ import { ContentProfile, type DriveReimportStrategy } from "@prisma/client";
 import { getCurrentUserGoogleOAuthClient } from "@/modules/auth/application/google-connection-service";
 import { normalizeSheetRow } from "@/modules/content-intake/application/normalize-sheet-row";
 import type { DriveSpreadsheetRecord, DriveWorksheet } from "@/modules/content-intake/domain/drive-import";
+import { DRIVE_PROVIDER_MODE } from "@/shared/config/env";
 import {
   driveSmmPlanImportProfile,
   findMappedFieldHeaders,
   type SheetProfile,
 } from "@/modules/content-intake/domain/sheet-profiles";
 import type { NormalizeSheetRowRequest } from "@/modules/content-intake/domain/normalize-sheet-request";
+import { getMockGoogleSpreadsheetWorkbook } from "./mock-google-sheets-provider";
 
 const SHEET_VALUE_RANGE = "A:AZ";
 const MAX_HEADER_SCAN_ROWS = 20;
@@ -69,30 +71,31 @@ export type GoogleSheetsParsedRow = {
     strategy: string;
     title: string;
     sourceField?: string;
+    titleDerivedFromBrief?: boolean;
   };
   planningFields: {
     plannedDate?: string;
-    platformLabel?: string;
     campaignLabel?: string;
-    ideaOrBrief?: string;
     copyEnglish: string;
-    copyPortuguese?: string;
     sourceAssetLink?: string;
     contentDeadline?: string;
-    copyLanguageIsFallback?: boolean;
   };
   sourceMetadata: {
     publishedFlag?: string | boolean;
-    publishedPostUrl?: string;
-    outreachAccount?: string;
-    outreachCopy?: string;
-    extra?: Record<string, unknown>;
   };
   contentProfile: ContentProfile;
-  operationalStatus: "WAITING_FOR_COPY" | "READY_FOR_DESIGN" | "LATE" | "PUBLISHED";
+  operationalStatus:
+    | "BLOCKED"
+    | "WAITING_FOR_COPY"
+    | "READY_FOR_DESIGN"
+    | "READY_TO_PUBLISH"
+    | "LATE"
+    | "POSTED"
+    | "PUBLISHED";
+  blockReason?: "MISSING_TITLE" | "MISSING_COPY";
   translationRequired: boolean;
   autoPostEnabled: boolean;
-  preferredDesignProvider: "CANVA" | "AI_VISUAL" | "MANUAL";
+  preferredDesignProvider: "CANVA" | "GPT_IMAGE" | "AI_VISUAL" | "MANUAL";
   contentSignature: string;
 };
 
@@ -216,6 +219,45 @@ function normalizeRowValues(headers: string[], rowValues: string[]) {
   return nextRowValues.slice(0, headers.length);
 }
 
+function buildOperationalRawRow(input: {
+  plannedDate?: string;
+  campaignLabel?: string;
+  copyEnglish: string;
+  sourceAssetLink?: string;
+  contentDeadline?: string;
+  publishedFlag?: string | boolean;
+}) {
+  const rawRow: Record<string, string | boolean> = {
+    "LinkedIn Copy": input.copyEnglish,
+  };
+
+  if (input.plannedDate?.trim()) {
+    rawRow.Date = input.plannedDate.trim();
+  }
+
+  if (input.campaignLabel?.trim()) {
+    rawRow.Title = input.campaignLabel.trim();
+  }
+
+  if (input.sourceAssetLink?.trim()) {
+    rawRow["IMG LINK"] = input.sourceAssetLink.trim();
+  }
+
+  if (input.contentDeadline?.trim()) {
+    rawRow["Content Deadline"] = input.contentDeadline.trim();
+  }
+
+  if (typeof input.publishedFlag === "string") {
+    if (input.publishedFlag.trim()) {
+      rawRow.Published = input.publishedFlag.trim();
+    }
+  } else if (typeof input.publishedFlag === "boolean") {
+    rawRow.Published = input.publishedFlag ? "Yes" : "No";
+  }
+
+  return rawRow as Record<string, string>;
+}
+
 async function getSheetsClient() {
   const { oauthClient } = await getCurrentUserGoogleOAuthClient();
   return google.sheets({ version: "v4", auth: oauthClient });
@@ -268,6 +310,21 @@ export async function readGoogleSpreadsheetWorkbook(input: {
   spreadsheetName: string;
   sourceGroup: DriveSpreadsheetRecord["sourceContext"]["sourceGroup"];
 }): Promise<GoogleSheetsRawSpreadsheetImport> {
+  if (DRIVE_PROVIDER_MODE === "MOCK") {
+    return getMockGoogleSpreadsheetWorkbook({
+      driveFileId: input.spreadsheetId,
+      spreadsheetId: input.spreadsheetId,
+      spreadsheetName: input.spreadsheetName,
+      sourceContext: {
+        sourceGroup: input.sourceGroup,
+        owner: "Mock",
+        region: "Mock",
+        audience: "Mock",
+        tags: [],
+      },
+    });
+  }
+
   const profile = driveSmmPlanImportProfile;
   const worksheets = await listLiveSpreadsheetWorksheets(input.spreadsheetId);
   const rawWorksheets = await loadWorksheetRows(input.spreadsheetId, worksheets);
@@ -379,13 +436,11 @@ function buildContentSignature(input: {
   sourceGroup: string;
   title: string;
   plannedDate?: string;
-  platformLabel?: string;
   copyEnglish: string;
 }) {
   return [
     input.sourceGroup.trim().toLowerCase(),
     input.plannedDate?.trim().toLowerCase() ?? "",
-    input.platformLabel?.trim().toLowerCase() ?? "",
     input.title.trim().toLowerCase(),
     input.copyEnglish.trim().toLowerCase(),
   ]
@@ -432,10 +487,10 @@ export async function readGoogleSpreadsheetImport(input: {
     const titleDerivation = normalized.normalization.titleDerivation;
     const planningFields = normalized.planning;
     const sourceMetadata = normalized.sourceMetadata;
-    const rowMap = request.source.headers.reduce<Record<string, string>>((accumulator, header, index) => {
-      accumulator[header] = request.source.rowValues[index] ?? "";
-      return accumulator;
-    }, {});
+    const rowMap = buildOperationalRawRow({
+      ...planningFields,
+      publishedFlag: sourceMetadata.publishedFlag,
+    });
 
     const parsedRow: GoogleSheetsParsedRow = {
       worksheetId: request.source.worksheetId,
@@ -456,6 +511,7 @@ export async function readGoogleSpreadsheetImport(input: {
       sourceMetadata,
       contentProfile: normalized.content.profile,
       operationalStatus: normalized.workflow.operationalStatus ?? "READY_FOR_DESIGN",
+      blockReason: normalized.workflow.blockReason,
       translationRequired: normalized.workflow.translationRequired,
       autoPostEnabled: normalized.workflow.autoPostEnabled,
       preferredDesignProvider: normalized.workflow.preferredDesignProvider,
@@ -463,7 +519,6 @@ export async function readGoogleSpreadsheetImport(input: {
         sourceGroup: input.sourceGroup,
         title: titleDerivation.title,
         plannedDate: planningFields.plannedDate,
-        platformLabel: planningFields.platformLabel,
         copyEnglish: planningFields.copyEnglish,
       }),
     };

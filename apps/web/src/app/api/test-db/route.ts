@@ -6,8 +6,12 @@ export async function GET() {
     const prisma = getPrisma();
     const result = await prisma.$queryRaw`SELECT 1 as "connected"`;
     return NextResponse.json({ success: true, result });
-  } catch (error: any) {
-    console.error("API error connecting to DB:", error.message);
-    return NextResponse.json({ success: false, error: error.message, stack: error.stack }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("API error connecting to DB:", message);
+    return NextResponse.json(
+      { success: false, error: "Database connection failed." },
+      { status: 500 },
+    );
   }
 }

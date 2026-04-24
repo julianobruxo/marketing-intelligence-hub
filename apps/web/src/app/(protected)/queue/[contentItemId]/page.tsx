@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   AlertTriangle,
   Clock,
@@ -8,9 +7,11 @@ import type { ReactNode } from "react";
 import { ApprovalDecision, ApprovalStage, DesignProvider, DesignRequestStatus } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { CANVA_PROVIDER_MODE, GPT_IMAGE_PROVIDER_MODE, NB_PROVIDER_MODE } from "@/shared/config/env";
 import {
   buildContentTimeline,
   buildOperationalSummary,
+  buildDesignEligibilityView,
   getSemanticWorkflowDecision,
   buildTemplateRoutingSummary,
 } from "@/modules/content-catalog/application/content-workflow-view-model";
@@ -18,13 +19,23 @@ import { getPublishedPreview } from "@/modules/content-catalog/application/conte
 import { getContentItemDetail } from "@/modules/content-catalog/application/content-queries";
 import {
   approveDesignReadyAction,
-  runCanvaDesignRequestAction,
-  syncCanvaDesignRequestAction,
 } from "@/modules/design-orchestration/application/run-canva-design-request";
+import { syncDesignRequestAction } from "@/modules/design-orchestration/application/run-design-initiation";
+import { resetDesignStateAction } from "@/modules/design-orchestration/application/reset-design-state";
 import { isSliceOneCanvaEligible } from "@/modules/design-orchestration/domain/canva-slice";
-import { designSimulationScenarioSchema } from "@/modules/design-orchestration/domain/design-provider";
+import { DesignInitiationButton } from "./design-initiation-button";
+import {
+  NanaBananaVariationChooser,
+} from "./nano-banana-variation-chooser";
+import { RejectDesignPanel } from "./reject-design-panel";
+import {
+  extractNanaBananaVariations,
+  extractSelectedVariationId,
+} from "./nano-banana-variation-utils";
+import type { AvailableTemplateMapping } from "./design-provider-modal";
 import {
   addWorkflowNoteAction,
+  advanceToReadyForDesignAction,
   recordApprovalAction,
   recordApprovalActionWithDecision,
   recordPostedAction,
@@ -34,6 +45,9 @@ import { CollapsibleSection } from "./collapsible-section";
 import { ItemHeader } from "./item-header";
 import { formatOperationalLabel } from "@/shared/ui/operational-status";
 import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-intake/domain/infer-content-status";
+import { getDesignSyncState } from "@/modules/design-orchestration/domain/design-sync-state";
+
+export const maxDuration = 180;
 
 // ─── Label helpers ────────────────────────────────────────────────────────────
 
@@ -43,29 +57,19 @@ import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-int
  */
 function fieldDisplayLabel(rawKey: string): string {
   const MAP: Record<string, string> = {
-    copyEnglish: "Copy (English)",
-    copyPortuguese: "Copy (Portuguese)",
-    plannedDate: "Planned date",
-    campaignLabel: "Campaign",
-    platformLabel: "Platform",
+    copyEnglish: "LinkedIn Copy",
+    plannedDate: "Date",
+    campaignLabel: "Title",
     contentDeadline: "Content deadline",
-    sheetProfileKey: "Sheet profile",
-    titleDerivation: "Title derivation",
     publishedFlag: "Published",
-    publishedPostUrl: "Published post link",
-    sourceAssetLink: "Source asset link",
+    sourceAssetLink: "IMG LINK",
     // snake_case variants (in case they appear)
-    COPYENGLISH: "Copy (English)",
-    COPYPORTUGUESE: "Copy (Portuguese)",
-    PLANNEDDATE: "Planned date",
-    CAMPAIGNLABEL: "Campaign",
-    PLATFORMLABEL: "Platform",
+    COPYENGLISH: "LinkedIn Copy",
+    PLANNEDDATE: "Date",
+    CAMPAIGNLABEL: "Title",
     CONTENTDEADLINE: "Content deadline",
-    SHEETPROFILEKEY: "Sheet profile",
-    TITLEDERIVATION: "Title derivation",
     PUBLISHEDFLAG: "Published",
-    PUBLISHEDPOSTURL: "Published post link",
-    SOURCEASSETLINK: "Source asset link",
+    SOURCEASSETLINK: "IMG LINK",
   };
 
   if (MAP[rawKey]) return MAP[rawKey];
@@ -93,12 +97,31 @@ function formatDesignProviderLabel(provider: DesignProvider | null | undefined) 
   switch (provider) {
     case "CANVA":
       return "Canva template";
+    case "GPT_IMAGE":
+      return "GPT Image 2";
     case "AI_VISUAL":
       return "Nano Banana 2";
     case "MANUAL":
       return "Manual";
     default:
       return "Manual";
+  }
+}
+
+function formatContentAuthorLabel(profile: string) {
+  switch (profile) {
+    case "YANN":
+      return "Yann";
+    case "YURI":
+      return "Yuri";
+    case "SHAWN":
+      return "Shawn";
+    case "SOPHIAN_YACINE":
+      return "Sophian Yacine";
+    case "ZAZMIC_PAGE":
+      return "Zazmic Page";
+    default:
+      return profile.toLowerCase().replaceAll("_", " ");
   }
 }
 
@@ -113,6 +136,18 @@ function formatDateTime(value: Date) {
   }).format(value);
 }
 
+const OPERATIONAL_PLANNING_FIELDS = [
+  "plannedDate",
+  "campaignLabel",
+  "copyEnglish",
+  "sourceAssetLink",
+  "contentDeadline",
+] as const;
+
+const OPERATIONAL_SOURCE_METADATA_FIELDS = [
+  "publishedFlag",
+] as const;
+
 // ─── Planning snapshot helpers ────────────────────────────────────────────────
 
 function getPlanningFieldEntries(planningSnapshot: unknown) {
@@ -120,9 +155,13 @@ function getPlanningFieldEntries(planningSnapshot: unknown) {
   const snapshot = planningSnapshot as Record<string, unknown>;
   const planning = snapshot.planning;
   if (!planning || typeof planning !== "object") return [];
-  return Object.entries(planning as Record<string, unknown>).filter(([, value]) => {
-    if (typeof value === "string") return value.trim().length > 0;
-    return value !== null && value !== undefined;
+  const planningRecord = planning as Record<string, unknown>;
+  return OPERATIONAL_PLANNING_FIELDS.flatMap((field) => {
+    const value = planningRecord[field];
+    if (typeof value === "string") {
+      return value.trim().length > 0 ? [[field, value] as [string, unknown]] : [];
+    }
+    return value !== null && value !== undefined ? [[field, value] as [string, unknown]] : [];
   });
 }
 
@@ -131,29 +170,31 @@ function getSourceMetadataEntries(planningSnapshot: unknown) {
   const snapshot = planningSnapshot as Record<string, unknown>;
   const sourceMetadata = snapshot.sourceMetadata;
   if (!sourceMetadata || typeof sourceMetadata !== "object") return [];
-  return Object.entries(sourceMetadata as Record<string, unknown>).filter(([, value]) => {
-    if (typeof value === "string") return value.trim().length > 0;
-    return value !== null && value !== undefined;
+  const sourceMetadataRecord = sourceMetadata as Record<string, unknown>;
+  return OPERATIONAL_SOURCE_METADATA_FIELDS.flatMap((field) => {
+    const value = sourceMetadataRecord[field];
+    if (typeof value === "string") {
+      return value.trim().length > 0 ? [[field, value] as [string, unknown]] : [];
+    }
+    return value !== null && value !== undefined ? [[field, value] as [string, unknown]] : [];
   });
-}
-
-function getNormalizationSnapshot(planningSnapshot: unknown) {
-  if (!planningSnapshot || typeof planningSnapshot !== "object") return null;
-  const snapshot = planningSnapshot as Record<string, unknown>;
-  return snapshot.normalization && typeof snapshot.normalization === "object"
-    ? (snapshot.normalization as Record<string, unknown>)
-    : null;
 }
 
 function getTrimmedString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function extractOriginalCopy(
-  planningSnapshot: unknown,
-  fallbackTitle: string,
-  fallbackCopy: string | null,
-) {
+function readBlockReasonFromSnapshot(planningSnapshot: unknown): string | null {
+  if (!planningSnapshot || typeof planningSnapshot !== "object") return null;
+  const snapshot = planningSnapshot as Record<string, unknown>;
+  const workflow =
+    snapshot.workflow && typeof snapshot.workflow === "object"
+      ? (snapshot.workflow as Record<string, unknown>)
+      : null;
+  return typeof workflow?.blockReason === "string" ? workflow.blockReason : null;
+}
+
+function extractOriginalCopy(planningSnapshot: unknown) {
   const snapshot =
     planningSnapshot && typeof planningSnapshot === "object"
       ? (planningSnapshot as Record<string, unknown>)
@@ -162,28 +203,8 @@ function extractOriginalCopy(
     snapshot?.planning && typeof snapshot.planning === "object"
       ? (snapshot.planning as Record<string, unknown>)
       : null;
-  const normalization =
-    snapshot?.normalization && typeof snapshot.normalization === "object"
-      ? (snapshot.normalization as Record<string, unknown>)
-      : null;
-  const titleDerivation =
-    normalization?.titleDerivation && typeof normalization.titleDerivation === "object"
-      ? (normalization.titleDerivation as Record<string, unknown>)
-      : null;
-
   const englishCopy = getTrimmedString(planning?.copyEnglish);
-  const portugueseCopy = getTrimmedString(planning?.copyPortuguese);
-  // Only use non-English copy when no English copy exists at all
-  const isFallbackLanguage = !englishCopy && !!portugueseCopy;
-  const body = englishCopy ?? portugueseCopy ?? getTrimmedString(fallbackCopy);
-
-  const title = body
-    ? getTrimmedString(titleDerivation?.title) ??
-      getTrimmedString(planning?.campaignLabel) ??
-      fallbackTitle
-    : null;
-
-  return { title, body, isFallbackLanguage };
+  return { body: englishCopy };
 }
 
 function extractSpreadsheetName(planningSnapshot: unknown): string | null {
@@ -203,36 +224,6 @@ function formatPlanningValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function formatNormalizationValue(key: string, value: unknown): string {
-  if (value === null || value === undefined || value === "") return "—";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    const entries = value
-      .map((entry) => formatNormalizationValue(key, entry))
-      .filter((entry) => entry !== "—");
-    return entries.length > 0 ? entries.join(" · ") : "—";
-  }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (key === "titleDerivation") {
-      const parts: string[] = [];
-      if (typeof record.title === "string" && record.title.trim().length > 0) parts.push(record.title.trim());
-      if (typeof record.strategy === "string" && record.strategy.trim().length > 0) parts.push(formatLabel(record.strategy));
-      if (typeof record.sourceField === "string" && record.sourceField.trim().length > 0) parts.push(`field: ${record.sourceField.trim()}`);
-      return parts.length > 0 ? parts.join(" · ") : "—";
-    }
-    const parts = Object.entries(record)
-      .map(([entryKey, entryValue]) => {
-        const formattedValue = formatNormalizationValue(entryKey, entryValue);
-        return formattedValue === "—" ? null : `${formatLabel(entryKey)}: ${formattedValue}`;
-      })
-      .filter((entry): entry is string => entry !== null);
-    return parts.length > 0 ? parts.join(" · ") : "—";
-  }
-  return "—";
-}
 
 // ─── Small display components ─────────────────────────────────────────────────
 
@@ -267,9 +258,9 @@ export default async function ContentItemDetailPage({
   // View model
   const planningFields = getPlanningFieldEntries(item.planningSnapshot);
   const sourceMetadataFields = getSourceMetadataEntries(item.planningSnapshot);
-  const normalizationSnapshot = getNormalizationSnapshot(item.planningSnapshot);
   const timelineEntries = buildContentTimeline(item);
   const operationalSummary = buildOperationalSummary(item);
+  const designEligibility = buildDesignEligibilityView(item);
   const templateRouting = buildTemplateRoutingSummary(item);
 
   // Derived data
@@ -277,6 +268,73 @@ export default async function ContentItemDetailPage({
   const latestAsset = item.assets[item.assets.length - 1];
   const latestSourceLink = item.sourceLinks[0];
   const latestImportReceipt = item.importReceipts[0];
+  const designSyncState = getDesignSyncState(latestDesignRequest?.resultPayload);
+
+  // Design initiation modal data
+  const availableMappings: AvailableTemplateMapping[] = item.activeTemplateMappings.map((m) => ({
+    id: m.id,
+    externalTemplateId: m.externalTemplateId,
+    displayName: m.displayName,
+    designProvider: m.designProvider as "CANVA" | "GPT_IMAGE" | "AI_VISUAL" | "MANUAL",
+  }));
+
+  // Last attempt config — pre-populates modal on retry
+  const lastRequestPayload =
+    latestDesignRequest?.requestPayload && typeof latestDesignRequest.requestPayload === "object"
+      ? (latestDesignRequest.requestPayload as Record<string, unknown>)
+      : null;
+  const lastTemplateId =
+    typeof lastRequestPayload?.templateId === "string" ? lastRequestPayload.templateId : null;
+  const lastNbPrompt = (() => {
+    const providerPayload = lastRequestPayload?.gptImage ?? lastRequestPayload?.nanoBanana;
+    if (!providerPayload || typeof providerPayload !== "object") return null;
+    const providerData = providerPayload as Record<string, unknown>;
+    return typeof providerData.customPrompt === "string" ? providerData.customPrompt : null;
+  })();
+  const lastPresetId = (() => {
+    const providerPayload = lastRequestPayload?.gptImage ?? lastRequestPayload?.nanoBanana;
+    if (!providerPayload || typeof providerPayload !== "object") return null;
+    const providerData = providerPayload as Record<string, unknown>;
+    return typeof providerData.presetId === "string" ? providerData.presetId : null;
+  })();
+  const lastProvider =
+    latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE
+      ? ("GPT_IMAGE" as const)
+      : latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL
+      ? ("AI_VISUAL" as const)
+      : latestDesignRequest?.designProvider === DesignProvider.CANVA
+        ? ("CANVA" as const)
+        : null;
+  const isDesignRejected =
+    item.currentStatus === "CHANGES_REQUESTED" &&
+    latestDesignRequest?.status === DesignRequestStatus.REJECTED;
+
+  // AI visual variations (shown in DESIGN_READY state for GPT Image or Nano Banana requests)
+  const isAiVisualReadyResult =
+    item.currentStatus === "DESIGN_READY" &&
+    (latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE ||
+      latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL);
+  const nbVariations = isAiVisualReadyResult
+    ? extractNanaBananaVariations(latestDesignRequest?.resultPayload)
+    : [];
+  const nbSelectedVariationId = isAiVisualReadyResult
+    ? extractSelectedVariationId(item.assets[item.assets.length - 1]?.metadata) ??
+      extractSelectedVariationId(latestDesignRequest?.resultPayload)
+    : null;
+  const blocksAiVisualApproval = isAiVisualReadyResult && !nbSelectedVariationId;
+  const selectedDesignVariationId =
+    extractSelectedVariationId(latestAsset?.metadata) ??
+    extractSelectedVariationId(latestDesignRequest?.resultPayload);
+  const isAiDesignProvider =
+    latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE ||
+    latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL;
+  const hasSelectedDesignAsset = latestAsset
+    ? isAiDesignProvider
+      ? Boolean(selectedDesignVariationId)
+      : Boolean(latestAsset.externalUrl || latestAsset.storagePath)
+    : false;
+  const canResetApprovedDesign =
+    item.currentStatus === "DESIGN_APPROVED" && !hasSelectedDesignAsset;
 
   // Action availability
   const canvaEligible = isSliceOneCanvaEligible({
@@ -287,11 +345,18 @@ export default async function ContentItemDetailPage({
   const canvaSliceReady =
     canvaEligible &&
     (item.currentStatus === "CONTENT_APPROVED" || item.currentStatus === "READY_FOR_DESIGN");
-  const canvaRetryReady = canvaEligible && item.currentStatus === "DESIGN_FAILED";
-  const canRefreshDesign =
+  const canvaRetryReady =
+    canvaEligible &&
+    designEligibility.canRetry &&
+    (item.currentStatus === "DESIGN_FAILED" || isDesignRejected);
+  const hasActiveDesignRequest =
     latestDesignRequest &&
     (latestDesignRequest.status === DesignRequestStatus.REQUESTED ||
       latestDesignRequest.status === DesignRequestStatus.IN_PROGRESS);
+  const canRefreshDesign =
+    hasActiveDesignRequest && Boolean(latestDesignRequest.externalRequestId);
+  const canResetDesign =
+    (item.currentStatus === "IN_DESIGN" && !canRefreshDesign) || canResetApprovedDesign;
   const canRecordTranslationApproval =
     item.translationRequired &&
     canRecordApprovalAction({
@@ -299,9 +364,11 @@ export default async function ContentItemDetailPage({
       stage: ApprovalStage.TRANSLATION,
     });
   const operationalStatus = readOperationalStatusFromPlanningSnapshot(item.planningSnapshot);
+  const operationalBlockReason = readBlockReasonFromSnapshot(item.planningSnapshot);
   const semanticDecision = getSemanticWorkflowDecision(item);
   const publishedPreview =
     semanticDecision?.baseVisualFamily === "green" ||
+    operationalStatus === "POSTED" ||
     operationalStatus === "PUBLISHED" ||
     item.currentStatus === "PUBLISHED_MANUALLY" ||
     item.currentStatus === "POSTED"
@@ -321,7 +388,7 @@ export default async function ContentItemDetailPage({
     | "waiting";
 
   let primaryActionKind: PrimaryActionKind = "waiting";
-  if (operationalStatus === "WAITING_FOR_COPY") {
+  if (operationalStatus === "BLOCKED" || operationalStatus === "WAITING_FOR_COPY") {
     primaryActionKind = "waiting";
   } else if (canvaSliceReady) primaryActionKind = "design_start";
   else if (canRefreshDesign) primaryActionKind = "design_refresh";
@@ -374,11 +441,8 @@ export default async function ContentItemDetailPage({
     contentDeadlineRaw && typeof contentDeadlineRaw === "string" && contentDeadlineRaw.trim()
       ? contentDeadlineRaw
       : null;
-  const originalCopy = extractOriginalCopy(
-    item.planningSnapshot,
-    item.title,
-    typeof item.copy === "string" ? item.copy : null,
-  );
+
+  const originalCopy = extractOriginalCopy(item.planningSnapshot);
 
   const sourceSpreadsheetName = extractSpreadsheetName(item.planningSnapshot);
 
@@ -402,7 +466,7 @@ export default async function ContentItemDetailPage({
   const updatedAtStr = (item.latestImportAt ?? item.updatedAt).toISOString();
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4 animate-fade-in-up">
+    <div className="mx-auto max-w-4xl space-y-4 animate-fade-in-up" data-testid="item-detail">
 
       {/* ══════════════════════════════════════════════════════════════════ */}
       {/* ZONE 1 — Item header (compact + expandable)                       */}
@@ -412,6 +476,7 @@ export default async function ContentItemDetailPage({
         profile={item.profile}
         currentStatus={item.currentStatus}
         operationalStatus={operationalStatus}
+        operationalBlockReason={operationalBlockReason}
         contentDeadline={contentDeadlineDisplay}
         plannedDate={plannedDateDisplay}
         primaryActionKind={primaryActionKind}
@@ -426,9 +491,7 @@ export default async function ContentItemDetailPage({
         translationStatus={item.translationStatus}
         preferredDesignProvider={item.preferredDesignProvider ?? "MANUAL"}
         contentType={item.contentType}
-        originalCopyTitle={originalCopy.title}
         originalCopyBody={originalCopy.body}
-        copyIsFallbackLanguage={originalCopy.isFallbackLanguage}
         semanticDecision={semanticDecision}
       />
 
@@ -436,11 +499,14 @@ export default async function ContentItemDetailPage({
         <section className="app-surface-panel rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-[rgba(88,108,186,0.32)] dark:bg-[rgba(23,31,58,0.78)]">
-              <img
-                src={publishedPreview.previewUrl}
-                alt={`${item.title} preview`}
-                className="h-40 w-full object-cover sm:h-28 sm:w-40"
-              />
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element -- Published previews can be dynamic or data URLs, so next/image is not appropriate here. */}
+                <img
+                  src={publishedPreview.previewUrl}
+                  alt={`${item.title} preview`}
+                  className="h-40 w-full object-cover sm:h-28 sm:w-40"
+                />
+              </>
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">
@@ -479,12 +545,29 @@ export default async function ContentItemDetailPage({
             <Clock className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#0A66C2' }} />
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: '#0A66C2' }}>
-                {operationalStatus === "WAITING_FOR_COPY" ? "Blocked: Awaiting Copy" : "Waiting"}
+                {operationalStatus === "BLOCKED" || operationalStatus === "WAITING_FOR_COPY" ? "Blocked" : "Waiting"}
               </p>
               <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                {operationalStatus === "WAITING_FOR_COPY" ? "Waiting for copy" : operationalSummary.waitingOn}
+                {operationalStatus === "BLOCKED" || operationalStatus === "WAITING_FOR_COPY" ? "Required source fields missing" : operationalSummary.waitingOn}
               </p>
-              <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">{operationalSummary.nextStep}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">
+                {operationalStatus === "BLOCKED" && operationalBlockReason === "MISSING_COPY"
+                  ? "This item doesn't have a valid copy. It will remain BLOCKED until a valid copy is added to the right Column"
+                  : operationalSummary.nextStep}
+              </p>
+              {canResetDesign ? (
+                <form action={resetDesignStateAction} className="mt-3">
+                  <input type="hidden" name="contentItemId" value={item.id} />
+                  <Button
+                    type="submit"
+                    variant="link"
+                    className="h-auto p-0 text-sm text-muted-foreground underline"
+                    data-testid="reset-design-button"
+                  >
+                    Reset and try again
+                  </Button>
+                </form>
+              ) : null}
             </div>
           </div>
         </section>
@@ -503,68 +586,132 @@ export default async function ContentItemDetailPage({
             {operationalSummary.nextStep}
           </p>
 
+          {primaryActionKind === "design_approve" && isAiVisualReadyResult && nbVariations.length > 0 && (
+            <div className="mt-4">
+              <NanaBananaVariationChooser
+                contentItemId={item.id}
+                variations={nbVariations}
+                selectedVariationId={nbSelectedVariationId}
+              />
+            </div>
+          )}
+
           {/* Primary action button(s) */}
           <div className="mt-4 flex flex-wrap gap-2">
             {primaryActionKind === "design_start" && (
-              <form action={runCanvaDesignRequestAction}>
-                <input type="hidden" name="contentItemId" value={item.id} />
-                <input
-                  type="hidden"
-                  name="simulationScenario"
-                  value={designSimulationScenarioSchema.enum.SUCCESS}
-                />
-                <Button
-                  type="submit"
-                  className="transition-default"
-                  style={{ backgroundColor: '#E11D48', color: 'white' }}
-                >
-                  Generate Design
-                </Button>
-              </form>
+              <DesignInitiationButton
+                contentItemId={item.id}
+                title={item.title}
+                author={formatContentAuthorLabel(item.profile)}
+                copy={item.copy ?? ""}
+                availableMappings={availableMappings}
+                mode="start"
+                label="Generate Design"
+                lastProvider={null}
+                lastTemplateId={null}
+                lastPresetId={null}
+                lastPrompt={null}
+                canvaProviderMode={CANVA_PROVIDER_MODE}
+                gptImageProviderMode={GPT_IMAGE_PROVIDER_MODE}
+                nbProviderMode={NB_PROVIDER_MODE}
+              />
             )}
 
             {primaryActionKind === "design_refresh" && (
-              <form action={syncCanvaDesignRequestAction}>
-                <input type="hidden" name="contentItemId" value={item.id} />
-                <Button
-                  type="submit"
-                  className="transition-default"
-                  style={{ backgroundColor: '#E11D48', color: 'white' }}
-                >
-                  Sync Design
-                </Button>
-              </form>
+              <div className="space-y-2">
+                <form action={syncDesignRequestAction}>
+                  <input type="hidden" name="contentItemId" value={item.id} />
+                  <Button
+                    type="submit"
+                    className="transition-default"
+                    data-testid="sync-design-button"
+                    style={{ backgroundColor: '#E11D48', color: 'white' }}
+                  >
+                    Sync Design
+                  </Button>
+                </form>
+                {item.currentStatus === "IN_DESIGN" && designSyncState.failureCount > 0 && (
+                  <p
+                    className="text-xs font-medium text-amber-700 dark:text-amber-300"
+                    data-testid="sync-failure-counter"
+                  >
+                    Sync attempt {Math.min(designSyncState.failureCount + 1, designSyncState.maxSyncFailures)} of{" "}
+                    {designSyncState.maxSyncFailures} — still in progress
+                  </p>
+                )}
+              </div>
             )}
 
             {primaryActionKind === "design_retry" && (
-              <form action={runCanvaDesignRequestAction}>
-                <input type="hidden" name="contentItemId" value={item.id} />
-                <input
-                  type="hidden"
-                  name="simulationScenario"
-                  value={designSimulationScenarioSchema.enum.FAILURE}
-                />
-                <Button
-                  type="submit"
-                  className="transition-default"
-                  style={{ backgroundColor: '#E11D48', color: 'white' }}
-                >
-                  Retry Design
-                </Button>
-              </form>
+              <DesignInitiationButton
+                contentItemId={item.id}
+                title={item.title}
+                author={formatContentAuthorLabel(item.profile)}
+                copy={item.copy ?? ""}
+                availableMappings={availableMappings}
+                mode="retry"
+                label="Retry Design"
+                lastProvider={lastProvider}
+                lastTemplateId={lastTemplateId}
+                lastPresetId={lastPresetId}
+                lastPrompt={lastNbPrompt}
+                canvaProviderMode={CANVA_PROVIDER_MODE}
+                gptImageProviderMode={GPT_IMAGE_PROVIDER_MODE}
+                nbProviderMode={NB_PROVIDER_MODE}
+                disabled={!designEligibility.canRetry}
+              />
+            )}
+
+            {item.currentStatus === "DESIGN_FAILED" && designSyncState.retryable === false && (
+              <div
+                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-[rgba(245,158,11,0.25)] dark:bg-[rgba(92,56,8,0.18)] dark:text-amber-100"
+                data-testid="design-terminal-error-message"
+              >
+                <p className="font-semibold">Terminal error - cannot retry automatically.</p>
+                <p className="mt-1">
+                  {latestDesignRequest?.errorMessage ?? latestDesignRequest?.errorCode ?? "The provider returned a non-retryable failure."}
+                </p>
+              </div>
+            )}
+
+            {item.currentStatus === "DESIGN_FAILED" && !designEligibility.canRetry && (
+              <div
+                className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-[rgba(244,63,94,0.25)] dark:bg-[rgba(127,29,29,0.2)] dark:text-rose-200"
+                data-testid="retry-exhausted-message"
+              >
+                <p className="font-semibold">{designEligibility.headline}</p>
+                <p className="mt-1">{designEligibility.summary}</p>
+                {designEligibility.reasons.length > 0 ? (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5">
+                    {designEligibility.reasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
             )}
 
             {primaryActionKind === "design_approve" && (
-              <form action={approveDesignReadyAction}>
-                <input type="hidden" name="contentItemId" value={item.id} />
-                <Button
-                  type="submit"
-                  className="transition-default"
-                  style={{ backgroundColor: '#E11D48', color: 'white' }}
-                >
-                  Approve Design
-                </Button>
-              </form>
+              <div className="space-y-3">
+                <form action={approveDesignReadyAction}>
+                  <input type="hidden" name="contentItemId" value={item.id} />
+                  <Button
+                    type="submit"
+                    className="transition-default"
+                    disabled={blocksAiVisualApproval}
+                    data-testid="approve-design-button"
+                    style={{ backgroundColor: '#E11D48', color: 'white' }}
+                  >
+                    Approve Design
+                  </Button>
+                </form>
+                {blocksAiVisualApproval ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Select a generated variation before approving this design.
+                  </p>
+                ) : null}
+                <RejectDesignPanel contentItemId={item.id} currentStatus={item.currentStatus} />
+              </div>
             )}
 
             {primaryActionKind === "final_review" && (
@@ -598,6 +745,7 @@ export default async function ContentItemDetailPage({
                 <Button
                   type="submit"
                   className="transition-default font-semibold"
+                  data-testid="post-to-linkedin-button"
                   style={{ backgroundColor: '#0A66C2', color: 'white' }}
                 >
                   Post to LinkedIn
@@ -631,15 +779,23 @@ export default async function ContentItemDetailPage({
             )}
 
             {showContinueProcessPrimary && (
-              <Button asChild className="transition-default" style={{ backgroundColor: '#E11D48', color: 'white' }}>
-                <Link href="#secondary-actions">Continue Process</Link>
-              </Button>
+              <form action={advanceToReadyForDesignAction}>
+                <input type="hidden" name="contentItemId" value={item.id} />
+                <Button
+                  type="submit"
+                  className="transition-default"
+                  data-testid="continue-process-button"
+                  style={{ backgroundColor: '#E11D48', color: 'white' }}
+                >
+                  Continue Process
+                </Button>
+              </form>
             )}
           </div>
         </section>
       )}
 
-      {/* 2B — Blocker / waiting signal */}
+      {/* 2C — Blocker / waiting signal */}
       {operationalSummary.blocker ? (
         <div
           className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
@@ -743,6 +899,7 @@ export default async function ContentItemDetailPage({
               <div
                 key={note.id}
                 className="rounded-xl border border-slate-100 bg-slate-50/70 px-3.5 py-3 dark:border-[rgba(88,108,186,0.24)] dark:bg-[rgba(22,30,58,0.68)]"
+                data-testid="workflow-note"
               >
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400 dark:text-[#8B97B7]">
                   <span className="capitalize">{formatLabel(note.type)}</span>
@@ -767,7 +924,7 @@ export default async function ContentItemDetailPage({
           {/* Planning data */}
           {planningFields.length > 0 && (
             <div>
-              <SectionHeading>Planning data</SectionHeading>
+              <SectionHeading>Operational source data</SectionHeading>
               <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
                 {planningFields.map(([key, value]) => (
                   <KvRow
@@ -790,22 +947,6 @@ export default async function ContentItemDetailPage({
                     key={key}
                     label={fieldDisplayLabel(key)}
                     value={formatPlanningValue(value)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Import normalization */}
-          {normalizationSnapshot && (
-            <div>
-              <SectionHeading>Import normalization</SectionHeading>
-              <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
-                {Object.entries(normalizationSnapshot).map(([key, value]) => (
-                  <KvRow
-                    key={key}
-                    label={fieldDisplayLabel(key)}
-                    value={formatNormalizationValue(key, value)}
                   />
                 ))}
               </div>
@@ -969,13 +1110,18 @@ export default async function ContentItemDetailPage({
       <CollapsibleSection
         label="Audit trail"
         badge={auditCount > 0 ? `${auditCount} events` : undefined}
+        buttonTestId="audit-trail-toggle"
       >
         <div className="divide-y divide-slate-100">
           {timelineEntries.length === 0 ? (
             <p className="px-5 py-4 text-sm text-slate-500">No events recorded yet.</p>
           ) : (
             timelineEntries.map((entry) => (
-              <div key={entry.id} className="flex items-start gap-3 px-5 py-3">
+              <div
+                key={entry.id}
+                className="flex items-start gap-3 px-5 py-3"
+                data-testid="audit-trail-event"
+              >
                 <span
                   className={`mt-1.5 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
                     entry.tone === "rose"

@@ -20,12 +20,15 @@ type WorkflowStepperProps =
       mode?: "pipeline";
       steps: PipelineStepDef[];
       currentKey: string;
+      /** When set, the matching step renders red instead of the normal "current" style. */
+      errorKey?: string;
       className?: string;
     }
   | {
       mode: "steps";
       steps: WorkflowStepDef[];
       currentKey?: never;
+      errorKey?: never;
       className?: string;
     };
 
@@ -86,17 +89,24 @@ export function WorkflowStepper(props: WorkflowStepperProps) {
   // Pipeline mode (default) — compact horizontal display
   const currentIndex = props.steps.findIndex((s) => s.key === props.currentKey);
   const resolvedIndex = currentIndex === -1 ? 0 : currentIndex;
+  const errorKey = props.errorKey;
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
       {props.steps.map((step, index) => {
         const state = derivePipelineState(index, resolvedIndex);
+        const isError = errorKey === step.key && state === "current";
         return (
           <span key={step.key} className="flex items-center gap-2">
             {index > 0 ? <ChevronRight className="h-3 w-3 text-slate-300 dark:text-[#6F7FA3]" /> : null}
             {state === "complete" ? (
               <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] dark:border-emerald-500/50 dark:bg-emerald-900/40 dark:text-emerald-200">
                 <Check className="h-3 w-3" />
+                {step.label}
+              </span>
+            ) : isError ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] dark:border-rose-500/50 dark:bg-rose-900/40 dark:text-rose-200">
+                <Circle className="h-3 w-3 fill-current" />
                 {step.label}
               </span>
             ) : state === "current" ? (

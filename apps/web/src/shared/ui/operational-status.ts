@@ -31,8 +31,6 @@ const CLOSED_VALUES = new Set(["POSTED", "PUBLISHED", "PUBLISHED_MANUALLY", "COM
 
 const ROSE_VALUES = new Set([
   "FAILED",
-  "DESIGN_FAILED",
-  "CHANGES_REQUESTED",
   "CONFLICT",
   "REJECTED",
   "DUPLICATE",
@@ -40,9 +38,10 @@ const ROSE_VALUES = new Set([
 
 const AMBER_VALUES = new Set([
   "BLOCKED",
+  "CHANGES_REQUESTED",
+  "DESIGN_FAILED",
   "DESIGN_REQUESTED",
   "DESIGN_IN_PROGRESS",
-  "IN_DESIGN",
   "TRANSLATION_PENDING",
   "TRANSLATION_REQUESTED",
   "REQUESTED",
@@ -51,16 +50,21 @@ const AMBER_VALUES = new Set([
   "WAITING_FOR_COPY",
 ]);
 
-const EMERALD_VALUES = new Set([
-  "READY",
+const VIOLET_VALUES = new Set([
+  "READY_FOR_DESIGN",
+  "IN_DESIGN",
   "DESIGN_READY",
   "DESIGN_APPROVED",
+  "CONTENT_APPROVED",
+]);
+
+const EMERALD_VALUES = new Set([
+  "READY",
   "TRANSLATION_APPROVED",
   "APPROVED",
   "COMPLETED",
   "PROCESSED",
   "SENT_TO_QUEUE",
-  "READY_FOR_DESIGN",
   "READY_FOR_FINAL_REVIEW",
   "TRANSLATION_READY",
 ]);
@@ -69,7 +73,6 @@ const BLUE_VALUES = new Set([
   "NEEDS_ACTION",
   "IN_PROGRESS",
   "IMPORTED",
-  "READY_TO_PUBLISH",
   "READY_TO_POST",
   "POSTED",
   "PUBLISHED_MANUALLY",
@@ -82,27 +85,80 @@ const BLUE_VALUES = new Set([
 ]);
 
 const DISPLAY_LABELS: Record<string, string> = {
-  WAITING_FOR_COPY: "Waiting for Copy",
-  READY_FOR_DESIGN: "Generate Design",
+  BLOCKED: "BLOCKED",
+  WAITING_FOR_COPY: "BLOCKED",
+  READY_FOR_DESIGN: "DESIGN",
   IN_DESIGN: "In Design",
   CONTENT_APPROVED: "Generate Design",
   TRANSLATION_REQUESTED: "Await Translation",
-  TRANSLATION_PENDING: "Await Translation",
+  TRANSLATION_PENDING: "Translation Pending",
   TRANSLATION_READY: "Review Translation",
   READY_FOR_FINAL_REVIEW: "Final Review",
   READY_TO_POST: "Post to LinkedIn",
   POSTED: "POSTED",
-  // Legacy rename in display
-  READY_TO_PUBLISH: "Post to LinkedIn",
+  READY_TO_PUBLISH: "PA",
   PUBLISHED_MANUALLY: "POSTED",
   PUBLISHED: "POSTED",
   DESIGN_REQUESTED: "In Design",
   DESIGN_IN_PROGRESS: "In Design",
   DESIGN_READY: "Approve Design",
-  DESIGN_APPROVED: "Final Review",
+  DESIGN_APPROVED: "Pending Approval",
+  DESIGN_FAILED: "Design Failed",
+  CHANGES_REQUESTED: "Changes Requested",
   TRANSLATION_APPROVED: "Final Review",
   LATE: "Overdue",
 };
+
+export type QueueStatePresentation =
+  | { label: "BLOCKED"; tone: "amber" }
+  | { label: "DESIGN"; tone: "violet" }
+  | { label: "PA"; tone: "blue" }
+  | { label: "POSTED"; tone: "emerald" };
+
+export function getQueueStatePresentation(value: string | null | undefined): QueueStatePresentation | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.toUpperCase();
+
+  if (
+    normalized === "POSTED" ||
+    normalized === "PUBLISHED" ||
+    normalized === "PUBLISHED_MANUALLY"
+  ) {
+    return { label: "POSTED", tone: "emerald" };
+  }
+
+  if (normalized === "BLOCKED" || normalized === "WAITING_FOR_COPY" || normalized === "LATE") {
+    return { label: "BLOCKED", tone: "amber" };
+  }
+
+  if (normalized === "READY_TO_PUBLISH" || normalized === "READY_TO_POST") {
+    return { label: "PA", tone: "blue" };
+  }
+
+  if (
+    normalized === "READY_FOR_DESIGN" ||
+    normalized === "CONTENT_APPROVED" ||
+    normalized === "IN_DESIGN" ||
+    normalized === "DESIGN_REQUESTED" ||
+    normalized === "DESIGN_IN_PROGRESS" ||
+    normalized === "DESIGN_READY" ||
+    normalized === "DESIGN_APPROVED" ||
+    normalized === "DESIGN_FAILED" ||
+    normalized === "CHANGES_REQUESTED" ||
+    normalized === "TRANSLATION_REQUESTED" ||
+    normalized === "TRANSLATION_PENDING" ||
+    normalized === "TRANSLATION_READY" ||
+    normalized === "TRANSLATION_APPROVED" ||
+    normalized === "READY_FOR_FINAL_REVIEW"
+  ) {
+    return { label: "DESIGN", tone: "violet" };
+  }
+
+  return null;
+}
 
 export function formatOperationalLabel(value: string) {
   const normalized = value.toUpperCase();
@@ -121,10 +177,9 @@ export function getOperationalTone(value: string | null | undefined): Operationa
 
   const normalized = value.toUpperCase();
 
-  if (normalized === "LATE") return "rose";
   if (CLOSED_VALUES.has(normalized)) return "emerald";
 
-  if (normalized === "READY_FOR_DESIGN" || normalized === "CONTENT_APPROVED") {
+  if (VIOLET_VALUES.has(normalized)) {
     return "violet";
   }
 

@@ -8,7 +8,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Text normalisation helpers
+// Text normalization helpers
 // ---------------------------------------------------------------------------
 
 export function normalizeComparableText(value: string): string {
@@ -52,7 +52,7 @@ export function scoreComparableText(left: string, right: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Published-flag normalisation
+// Published-flag normalization
 // ---------------------------------------------------------------------------
 
 export function normalizeBooleanish(value: string | boolean | undefined | null): boolean {
@@ -95,21 +95,26 @@ export type WorksheetField =
   | "plannedDate"
   | "title"
   | "publishedFlag"
-  | "platformLabel"
   | "linkedinCopy"
-  | "brief"
-  | "publishedPostUrl"
+  | "sourceAssetLink"
   | "contentDeadline";
 
 export const WORKSHEET_FIELD_ALIASES: Record<WorksheetField, string[]> = {
-  plannedDate:      ["date", "planned date"],
-  title:            ["title", "post title", "headline", "campaign"],
-  publishedFlag:    ["published", "status", "posted"],
-  platformLabel:    ["platform", "channel", "account", "person"],
-  linkedinCopy:     ["linkedin copy", "linkedin", "linkedin - up to 3000 characters", "copy", "copy (en)", "english copy"],
-  brief:            ["copywriter brief", "topic", "idea", "theme", "briefing", "instructions", "notes", "notes for copywriter"],
-  publishedPostUrl: ["link to the post", "link to the comments", "post link"],
-  contentDeadline:  ["deadline", "content deadline"],
+  plannedDate: ["date", "planned date", "data"],
+  title: ["title", "titulo", "tÃƒÆ’Ã‚Â­tulo", "post title", "headline", "campaign"],
+  publishedFlag: ["published", "published?", "publicado", "status", "posted"],
+  linkedinCopy: [
+    "linkedin copy",
+    "linkedin",
+    "linkedin - up to 3000 characters",
+    "copy",
+    "copy (en)",
+    "english copy",
+    "linkedin copy english",
+    "linkedin copy french",
+  ],
+  sourceAssetLink: ["link img", "img link", "image link"],
+  contentDeadline: ["deadline", "content deadline"],
 };
 
 export type WorksheetColumnMap = Partial<Record<WorksheetField, number>>;
@@ -126,7 +131,7 @@ export function buildWorksheetColumnMap(headers: string[]): WorksheetColumnMap {
 
     for (const [field, aliases] of Object.entries(WORKSHEET_FIELD_ALIASES) as [WorksheetField, string[]][]) {
       if (colMap[field] !== undefined) {
-        continue; // first matching column wins
+        continue;
       }
       if (aliases.includes(headerNorm)) {
         colMap[field] = i;
@@ -159,44 +164,40 @@ export function extractColumnarRowFields(
 
 export type AiSemanticFlags = {
   is_empty_or_unusable: boolean;
-  has_editorial_brief: boolean;
   has_title: boolean;
   has_final_copy: boolean;
   is_published: boolean;
 };
 
 /**
- * Determines whether a row should be admitted as a queue candidate.
+ * Queue admission is intentionally spreadsheet-driven.
  *
- * Deterministic extraction takes precedence over the AI's platform flags so that
- * Substack, teaser, and brief-only rows in LinkedIn planning worksheets are not
- * incorrectly blocked by the AI's is_non_linkedin_platform / is_empty_or_unusable flags.
- * X Account worksheets are excluded upstream (worksheet-level).
+ * Only explicit operational spreadsheet fields should decide whether a row is a
+ * real queue candidate. AI semantic hints may still exist for observability, but
+ * they do not admit a row on their own.
  */
 export function isRowQueueCandidate(
   aiFlags: AiSemanticFlags,
   det: WorksheetExtractedFields,
 ): boolean {
-  // Deterministic qualification: date + at least one real content signal.
-  const detQualified =
-    Boolean(det.plannedDate) &&
-    (Boolean(det.title) || Boolean(det.brief) || Boolean(det.linkedinCopy));
+  void aiFlags;
 
-  if (detQualified) {
-    return true;
-  }
+  // Only a genuinely positive published marker (Yes/true/done/live) counts as a signal.
+  // A "No" value in the Published column is not a qualifying operational signal.
+  const hasPublishedSignal = normalizeBooleanish(det.publishedFlag);
+  const hasOperationalTitle = Boolean(det.title);
+  const hasOperationalCopy = Boolean(det.linkedinCopy);
+  const hasOperationalAsset = Boolean(det.sourceAssetLink);
+  const hasSchedulingContext =
+    Boolean(det.plannedDate) ||
+    Boolean(det.contentDeadline) ||
+    hasPublishedSignal;
 
-  // If AI says the row is genuinely empty/unusable and det found nothing, skip it.
-  if (aiFlags.is_empty_or_unusable) {
-    return false;
-  }
-
-  // AI qualification: row has at least one recognizable content signal.
   return (
-    aiFlags.has_editorial_brief ||
-    aiFlags.has_title ||
-    aiFlags.has_final_copy ||
-    aiFlags.is_published
+    hasPublishedSignal ||
+    hasOperationalTitle ||
+    hasOperationalCopy ||
+    (hasOperationalAsset && hasSchedulingContext)
   );
 }
 
@@ -204,11 +205,60 @@ export function isRowQueueCandidate(
 // Title derivation fallback
 // ---------------------------------------------------------------------------
 
+// Single-word labels that appear as the first line of a brief or copy column
+// to identify the platform/content type rather than the actual content.
+const GENERIC_CONTENT_LABELS = new Set([
+  "linkedin",
+  "substack",
+  "video",
+  "photo",
+  "photos",
+  "infographic",
+  "banner",
+  "newsletter",
+  "post",
+  "reel",
+  "story",
+  "carousel",
+  "thread",
+  "paidarticle",
+  "freearticle",
+  "article",
+  "news",
+]);
+
+export function isGenericContentLabel(value: string): boolean {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return normalized.length > 0 && GENERIC_CONTENT_LABELS.has(normalized);
+}
+
+/**
+ * Returns the first line from a multi-line text block that represents real content,
+ * skipping platform labels ("LinkedIn", "Substack"), very short tokens, URLs, and
+ * lines made up entirely of bullets or numbers.
+ */
+export function deriveFirstMeaningfulLine(text: string): string | undefined {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    if (line.length < 4) continue;
+    if (line.startsWith("http")) continue;
+    if (/^[\d\-*•/]+$/.test(line)) continue;
+    if (isGenericContentLabel(line)) continue;
+    return line;
+  }
+
+  return undefined;
+}
+
 function truncateTitle(value: string, maxLength = 140): string {
   if (value.length <= maxLength) {
     return value;
   }
-  return `${value.slice(0, maxLength - 1).trimEnd()}…`;
+  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 export function buildFallbackTitle(input: {
@@ -217,20 +267,17 @@ export function buildFallbackTitle(input: {
   date?: string;
   rowNumber: number;
 }): string {
-  if (input.title && input.title.trim().length > 0) {
-    return input.title.trim();
-  }
+  void input.copy;
 
-  if (input.copy && input.copy.trim().length > 0) {
-    const [firstLine] = input.copy.trim().split(/\r?\n/);
-    return truncateTitle(firstLine.trim());
+  if (input.title && input.title.trim().length > 0) {
+    return truncateTitle(input.title.trim());
   }
 
   if (input.date && input.date.trim().length > 0) {
-    return `Planned item - ${input.date.trim()}`;
+    return `Post - ${input.date.trim()}`;
   }
 
-  return `Planned item - row ${input.rowNumber}`;
+  return `Post - row ${input.rowNumber}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +287,6 @@ export function buildFallbackTitle(input: {
 export function buildContentSignature(input: {
   sourceGroup: string;
   plannedDate?: string;
-  platformLabel?: string;
   title: string;
   copyEnglish: string;
 }): string {
@@ -248,7 +294,6 @@ export function buildContentSignature(input: {
     [
       input.sourceGroup,
       input.plannedDate ?? "",
-      input.platformLabel ?? "",
       input.title,
       input.copyEnglish,
     ].join(" | "),

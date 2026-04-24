@@ -45,14 +45,27 @@ function normalizeBooleanish(value: string | boolean | undefined | null) {
 function isPublishedSourceRow(payload: ContentIngestionPayload) {
   return (
     payload.normalization.rowQualification.isPublishedRow ||
-    normalizeBooleanish(payload.sourceMetadata.publishedFlag) ||
-    Boolean(payload.sourceMetadata.publishedPostUrl)
+    normalizeBooleanish(payload.sourceMetadata.publishedFlag)
   );
 }
 
 function resolveInitialStatus(payload: ContentIngestionPayload) {
-  if (isPublishedSourceRow(payload)) {
-    return ContentStatus.PUBLISHED_MANUALLY;
+  const operationalStatus = payload.workflow.operationalStatus;
+
+  if (operationalStatus === "POSTED" || operationalStatus === "PUBLISHED" || isPublishedSourceRow(payload)) {
+    return ContentStatus.POSTED;
+  }
+
+  if (operationalStatus === "READY_TO_PUBLISH") {
+    return ContentStatus.READY_TO_PUBLISH;
+  }
+
+  if (operationalStatus === "READY_FOR_DESIGN" || operationalStatus === "LATE") {
+    return ContentStatus.READY_FOR_DESIGN;
+  }
+
+  if (operationalStatus === "BLOCKED" || operationalStatus === "WAITING_FOR_COPY") {
+    return ContentStatus.BLOCKED;
   }
 
   if (payload.workflow.translationRequired ?? payload.content.translationRequired) {
@@ -74,11 +87,14 @@ function resolveTranslationCopy(payload: ContentIngestionPayload) {
   });
 }
 
-export async function importContentItem(rawPayload: unknown) {
+export async function importContentItem(
+  rawPayload: unknown,
+  options: { prisma?: unknown } = {},
+) {
   const payload = contentIngestionPayloadSchema.parse(rawPayload);
   const fingerprint = buildFingerprint(payload);
   const payloadJson = toJsonValue(payload);
-  const prisma = getPrisma();
+  const prisma = options.prisma ? (options.prisma as Prisma.TransactionClient) : getPrisma();
   logEvent("info", "[TRACE_IMPORT_QUEUE][INGEST] start", {
     idempotencyKey: payload.idempotencyKey,
     mode: payload.mode,
@@ -187,7 +203,9 @@ export async function importContentItem(rawPayload: unknown) {
     // (e.g. after queue/clear) and must not block canonical creation.
     const linkedRecordExists =
       existingReceipt.contentItemId !== null &&
-      (await prisma.contentItem.count({ where: { id: existingReceipt.contentItemId } })) > 0;
+      (await prisma.contentItem.count({
+        where: { id: existingReceipt.contentItemId, deletedAt: null },
+      })) > 0;
 
     if (linkedRecordExists) {
       logEvent("info", "[TRACE_IMPORT_QUEUE][INGEST] duplicate-receipt", {
@@ -244,7 +262,7 @@ export async function importContentItem(rawPayload: unknown) {
     };
   }
 
-  const result = await prisma.$transaction(async (tx) => {
+  const runImportTransaction = async (tx: Prisma.TransactionClient) => {
     const sourceLink = await tx.contentSourceLink.findUnique({
       where: {
         upstreamSystem_spreadsheetId_worksheetId_rowId: {
@@ -300,6 +318,7 @@ export async function importContentItem(rawPayload: unknown) {
           preferredDesignProvider: payload.workflow.preferredDesignProvider as DesignProvider,
           autopostEnabled: payload.workflow.autoPostEnabled,
           currentStatus: shouldResetWorkflow ? initialStatus : undefined,
+          deletedAt: null,
           planningSnapshot: payloadJson,
           latestImportAt: new Date(payload.triggeredAt),
         },
@@ -377,7 +396,9 @@ export async function importContentItem(rawPayload: unknown) {
               toStatus: initialStatus,
               note: isPublishedSourceRow(payload)
                 ? "Imported from a published source row."
-                : translationRequired
+                : initialStatus === ContentStatus.BLOCKED
+                  ? `Imported as blocked: ${payload.workflow.blockReason ?? "missing required content"}.`
+                  : translationRequired
                   ? "Imported from a row that requires translation approval."
                   : "Imported from normalized orchestration contract.",
             },
@@ -425,7 +446,11 @@ export async function importContentItem(rawPayload: unknown) {
       operation,
       targetContentItemId,
     };
-  });
+  };
+
+  const result = options.prisma
+    ? await runImportTransaction(options.prisma as Prisma.TransactionClient)
+    : await getPrisma().$transaction(runImportTransaction);
 
   logEvent("info", "[TRACE_IMPORT_QUEUE][INGEST] committed", {
     idempotencyKey: payload.idempotencyKey,

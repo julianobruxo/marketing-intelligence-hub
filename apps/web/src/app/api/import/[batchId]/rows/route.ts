@@ -21,7 +21,7 @@ const VALID_STATUSES = new Set<string>(Object.values(DriveSpreadsheetRowState));
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { batchId: string } },
+  { params }: { params: Promise<{ batchId: string }> },
 ) {
   try {
     await requireSession();
@@ -29,7 +29,7 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { batchId } = params;
+  const { batchId } = await params;
   const { searchParams } = request.nextUrl;
 
   const statusFilter = searchParams.get("status") ?? null;

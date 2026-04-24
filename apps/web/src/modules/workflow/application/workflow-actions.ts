@@ -21,6 +21,15 @@ export async function addWorkflowNoteAction(formData: FormData) {
     return;
   }
 
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
+    select: { id: true },
+  });
+
+  if (!contentItem) {
+    return;
+  }
+
   const actor = await prisma.user.findUnique({
     where: { email: session.email },
   });
@@ -78,8 +87,8 @@ export async function recordApprovalActionWithDecision(
     return;
   }
 
-  const contentItem = await prisma.contentItem.findUnique({
-    where: { id: contentItemId },
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
     select: { currentStatus: true },
   });
 
@@ -138,15 +147,62 @@ export async function recordApprovalActionWithDecision(
   revalidatePath("/queue");
 }
 
+export async function advanceToReadyForDesignAction(formData: FormData) {
+  const session = await requireSession();
+  const prisma = getPrisma();
+  const contentItemId = String(formData.get("contentItemId") ?? "");
+
+  if (!contentItemId) {
+    return;
+  }
+
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
+    select: { currentStatus: true },
+  });
+
+  if (!contentItem || contentItem.currentStatus === ContentStatus.READY_FOR_DESIGN) {
+    return;
+  }
+
+  const nextStatus = ContentStatus.READY_FOR_DESIGN;
+
+  assertContentStatusTransition({
+    currentStatus: contentItem.currentStatus,
+    nextStatus,
+    reason: "continue process",
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.contentItem.update({
+      where: { id: contentItemId },
+      data: { currentStatus: nextStatus },
+    });
+
+    await tx.statusEvent.create({
+      data: {
+        contentItemId,
+        fromStatus: contentItem.currentStatus,
+        toStatus: nextStatus,
+        actorEmail: session.email,
+        note: "Advanced to design via Continue Process.",
+      },
+    });
+  });
+
+  revalidatePath(`/queue/${contentItemId}`);
+  revalidatePath("/queue");
+}
+
 export async function recordPostedAction(formData: FormData) {
-  await requireSession();
+  const session = await requireSession();
   const prisma = getPrisma();
   const contentItemId = String(formData.get("contentItemId") ?? "");
 
   if (!contentItemId) return;
 
-  const contentItem = await prisma.contentItem.findUnique({
-    where: { id: contentItemId },
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
     select: { currentStatus: true },
   });
 
@@ -174,8 +230,8 @@ export async function recordPostedAction(formData: FormData) {
         contentItemId,
         fromStatus: contentItem.currentStatus,
         toStatus: nextStatus,
-        actorEmail: "system",
-        note: "Manually recorded as posted on LinkedIn.",
+        actorEmail: session.email,
+        note: `Manually recorded as posted on LinkedIn by ${session.email}.`,
       },
     });
   });

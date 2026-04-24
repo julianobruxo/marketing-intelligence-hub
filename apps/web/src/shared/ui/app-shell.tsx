@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { Download, FileText, PanelsTopLeft, Settings2 } from "lucide-react";
+import { Download, FileText, PanelsTopLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { UserSession } from "@/modules/auth/domain/session";
 import { UserMenu } from "./user-menu";

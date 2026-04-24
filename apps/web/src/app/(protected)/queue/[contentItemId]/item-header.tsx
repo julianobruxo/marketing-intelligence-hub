@@ -7,7 +7,11 @@ import { cn } from "@/lib/utils";
 import type { SemanticWorkflowDecision } from "@/modules/content-catalog/application/content-workflow-view-model";
 import { StatusBadge } from "@/shared/ui/status-badge";
 import { WorkflowStepper } from "@/shared/ui/workflow-stepper";
-import { formatOperationalLabel, type OperationalTone } from "@/shared/ui/operational-status";
+import {
+  formatOperationalLabel,
+  getQueueStatePresentation,
+  type OperationalTone,
+} from "@/shared/ui/operational-status";
 
 type BadgeColor = OperationalTone;
 
@@ -56,6 +60,8 @@ export type ItemHeaderProps = {
   profile: string;
   currentStatus: string;
   operationalStatus: string | null;
+  /** The block reason read from the planning snapshot workflow field (e.g. "MISSING_COPY"). */
+  operationalBlockReason?: string | null;
   contentDeadline: string | null;
   plannedDate: string | null;
   primaryActionKind: string;
@@ -70,9 +76,7 @@ export type ItemHeaderProps = {
   translationStatus: string;
   preferredDesignProvider: string;
   contentType: string;
-  originalCopyTitle: string | null;
   originalCopyBody: string | null;
-  copyIsFallbackLanguage: boolean;
   semanticDecision: SemanticWorkflowDecision | null;
 };
 
@@ -93,15 +97,16 @@ function ownerLabel(profile: string): string {
   }
 }
 
-function designProviderLabel(provider: string): string {
-  switch (provider) {
-    case "CANVA":
-      return "Canva";
-    case "AI_VISUAL":
-      return "AI Visual";
-    default:
-      return "Manual";
-  }
+/**
+ * Extracts the owner name from a spreadsheet name following the "SMM Plan | Owner Name" convention.
+ * Primary source of truth for owner display — avoids profile-enum guesses.
+ */
+function extractOwnerFromSpreadsheetName(spreadsheetName: string | null | undefined): string | null {
+  if (!spreadsheetName) return null;
+  const pipeIndex = spreadsheetName.indexOf("|");
+  if (pipeIndex === -1) return null;
+  const owner = spreadsheetName.slice(pipeIndex + 1).trim();
+  return owner.length > 0 ? owner : null;
 }
 
 function getStatusBadge(
@@ -109,6 +114,16 @@ function getStatusBadge(
   operationalStatus: string | null,
   semanticDecision: SemanticWorkflowDecision | null,
 ): { label: string; color: BadgeColor } {
+  const queueState = getQueueStatePresentation(
+    currentStatus === "POSTED" || currentStatus === "PUBLISHED_MANUALLY"
+      ? currentStatus
+      : operationalStatus ?? currentStatus,
+  );
+
+  if (queueState) {
+    return { label: queueState.label, color: queueState.tone };
+  }
+
   if (semanticDecision) {
     return {
       label: semanticDecision.visibleStatusLabel,
@@ -117,56 +132,15 @@ function getStatusBadge(
           ? "emerald"
           : semanticDecision.baseVisualFamily === "amber"
             ? "amber"
+            : semanticDecision.baseVisualFamily === "blue"
+              ? "blue"
             : semanticDecision.baseVisualFamily === "lavender"
               ? "violet"
               : "slate",
     };
   }
 
-  switch (currentStatus) {
-    case "POSTED":
-    case "PUBLISHED_MANUALLY":
-      return { label: "POSTED", color: "emerald" };
-    case "READY_TO_POST":
-    case "READY_TO_PUBLISH":
-      return { label: "Post to LinkedIn", color: "blue" };
-    case "READY_FOR_FINAL_REVIEW":
-      return { label: "Final Review", color: "emerald" };
-    case "WAITING_FOR_COPY":
-      return { label: "Waiting for Copy", color: "amber" };
-    case "READY_FOR_DESIGN":
-    case "CONTENT_APPROVED":
-      return { label: "Generate Design", color: "violet" };
-    case "IN_DESIGN":
-    case "DESIGN_REQUESTED":
-    case "DESIGN_IN_PROGRESS":
-      return { label: "In Design", color: "amber" };
-    case "TRANSLATION_REQUESTED":
-    case "TRANSLATION_PENDING":
-      return { label: "Await Translation", color: "amber" };
-    case "TRANSLATION_READY":
-      return { label: "Review Translation", color: "blue" };
-    case "DESIGN_READY":
-      return { label: "Approve Design", color: "emerald" };
-    case "DESIGN_APPROVED":
-    case "TRANSLATION_APPROVED":
-      return { label: "Final Review", color: "emerald" };
-    case "DESIGN_FAILED":
-      return { label: "Design Failed", color: "rose" };
-    case "CHANGES_REQUESTED":
-      return { label: "Changes Requested", color: "rose" };
-  }
-
-  switch (operationalStatus) {
-    case "WAITING_FOR_COPY":
-      return { label: "Waiting for Copy", color: "amber" };
-    case "READY_FOR_DESIGN":
-      return { label: "Generate Design", color: "violet" };
-    case "PUBLISHED":
-      return { label: "POSTED", color: "emerald" };
-    default:
-      return { label: formatOperationalLabel(currentStatus), color: "slate" };
-  }
+  return { label: formatOperationalLabel(currentStatus), color: "slate" };
 }
 
 function getDeadlineBadge(
@@ -231,8 +205,10 @@ function getNextAction(
   }
 
   if (primaryActionKind === "review" || primaryActionKind === "waiting") {
-    if (operationalStatus === "WAITING_FOR_COPY") return "Await Copy";
+    if (operationalStatus === "BLOCKED" || operationalStatus === "WAITING_FOR_COPY") return "Blocked";
     if (operationalStatus === "READY_FOR_DESIGN") return "Generate Design";
+    if (operationalStatus === "READY_TO_PUBLISH") return "Post to LinkedIn";
+    if (operationalStatus === "POSTED") return "Posted";
   }
 
   return ACTION_LABELS[primaryActionKind] ?? "";
@@ -261,6 +237,8 @@ function getHeaderShellClasses(tone: BadgeColor) {
       return "border-emerald-200/80 bg-[linear-gradient(180deg,rgba(247,254,250,0.98),rgba(236,253,245,0.95))] dark:border-[rgba(52,211,153,0.15)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
     case "blue":
       return "border-sky-200/80 bg-[linear-gradient(180deg,rgba(247,252,255,0.98),rgba(240,249,255,0.95))] dark:border-[rgba(56,189,248,0.12)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
+    case "violet":
+      return "border-violet-200/80 bg-[linear-gradient(180deg,rgba(250,245,255,0.98),rgba(237,233,254,0.95))] dark:border-[rgba(139,92,246,0.15)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
     case "slate":
     default:
       return "border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] dark:border-[rgba(99,102,241,0.15)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(11,17,32,0.97))]";
@@ -291,6 +269,7 @@ export function ItemHeader({
   profile,
   currentStatus,
   operationalStatus,
+  operationalBlockReason,
   contentDeadline,
   plannedDate,
   primaryActionKind,
@@ -305,14 +284,18 @@ export function ItemHeader({
   translationStatus,
   preferredDesignProvider,
   contentType,
-  originalCopyTitle,
   originalCopyBody,
-  copyIsFallbackLanguage,
   semanticDecision,
 }: ItemHeaderProps) {
   const [expanded, setExpanded] = useState(false);
+  void templateRouteLabel;
+  void preferredDesignProvider;
 
-  const owner = ownerLabel(profile);
+  // Copy step turns red when the item is blocked specifically because LinkedIn Copy is missing.
+  const copyBlocked = operationalStatus === "BLOCKED" && operationalBlockReason === "MISSING_COPY";
+
+  // Owner is derived from the spreadsheet name ("SMM Plan | Owner Name") — not from the profile enum.
+  const owner = extractOwnerFromSpreadsheetName(sourceSpreadsheetName) ?? ownerLabel(profile);
   const statusBadge = getStatusBadge(currentStatus, operationalStatus, semanticDecision);
   const deadlineBadge = getDeadlineBadge(
     contentDeadline,
@@ -321,6 +304,8 @@ export function ItemHeader({
   const pipelineStep = semanticDecision
     ? semanticDecision.statusKey === "PUBLISHED"
       ? "post"
+      : semanticDecision.statusKey === "READY_TO_PUBLISH"
+        ? "post"
       : semanticDecision.statusKey === "READY_FOR_DESIGN"
         ? "design"
         : "copy"
@@ -329,7 +314,7 @@ export function ItemHeader({
   const freshness = formatRelativeTime(new Date(updatedAt));
   const plannedLabel = plannedDate?.trim() ? `Planned ${plannedDate.trim()}` : null;
   const hasMetadata = Boolean(sourceWorksheetName || sourceSpreadsheetName || dateCreated || owner || contentType);
-  const hasCopyReference = Boolean(originalCopyTitle || originalCopyBody);
+  const hasCopyReference = Boolean(originalCopyBody);
   const hasDetails = hasMetadata || hasCopyReference;
 
   return (
@@ -376,7 +361,9 @@ export function ItemHeader({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <StatusBadge variant={statusBadge.color} label={statusBadge.label} />
+            <div data-testid="item-status">
+              <StatusBadge variant={statusBadge.color} label={statusBadge.label} />
+            </div>
 
             {deadlineBadge ? (
               <StatusBadge variant={deadlineBadge.color} label={deadlineBadge.label} dot={false} />
@@ -415,6 +402,7 @@ export function ItemHeader({
                     { key: "post", label: "Post" },
                   ]}
                   currentKey={pipelineStep}
+                  errorKey={copyBlocked ? "copy" : undefined}
                 />
               </div>
 
@@ -433,7 +421,7 @@ export function ItemHeader({
 
           {hasDetails ? (
             <div className="text-xs text-slate-400 dark:text-[#8A97B8]">
-              Source, import, template, and original copy stay available on demand.
+              Source, import, template, and LinkedIn copy stay available on demand.
             </div>
           ) : null}
         </div>
@@ -468,31 +456,15 @@ export function ItemHeader({
           <div className={cn("space-y-3", hasMetadata ? "mt-5 border-t border-slate-200/80 pt-4" : "")}>
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-[#8B97B7]">
-                Original Copy
+                LinkedIn Copy
               </p>
               <p className="mt-1 text-xs text-slate-500 dark:text-[#95A6CA]">
-                Read-only reference from the imported spreadsheet snapshot.
+                Read-only reference from the operational spreadsheet fields.
               </p>
             </div>
 
             {originalCopyBody ? (
               <div className="rounded-[24px] border border-slate-200/80 bg-white px-4 py-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.24)] dark:border-[rgba(95,114,186,0.34)] dark:bg-[rgba(16,23,47,0.84)] dark:shadow-[0_18px_40px_-30px_rgba(35,45,98,0.5)]">
-                {copyIsFallbackLanguage ? (
-                  <p
-                    className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-400"
-                  >
-                    No English copy found — showing original language copy only.
-                  </p>
-                ) : null}
-                {originalCopyTitle ? (
-                  <p
-                    data-testid="original-copy-title"
-                    className="mb-2 text-slate-900 dark:text-slate-100"
-                    style={{ fontFamily: "Arial, sans-serif", fontSize: "12px", fontWeight: 700 }}
-                  >
-                    {originalCopyTitle}
-                  </p>
-                ) : null}
                 <p
                   data-testid="original-copy-body"
                   className="whitespace-pre-wrap text-slate-700 dark:text-[#D6DEFB]"
@@ -506,7 +478,7 @@ export function ItemHeader({
                 className="rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-4 text-sm text-slate-500 dark:border-[rgba(95,114,186,0.34)] dark:bg-[rgba(16,23,47,0.84)] dark:text-[#95A6CA]"
                 data-testid="original-copy-empty"
               >
-                No copy available yet
+                No final LinkedIn copy found in source spreadsheet.
               </div>
             )}
           </div>

@@ -1,6 +1,5 @@
 "use server";
 
-import { createHash } from "node:crypto";
 import {
   AssetStatus,
   AssetType,
@@ -11,6 +10,7 @@ import {
 } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/modules/auth/application/auth-service";
+import { CANVA_PROVIDER_MODE } from "@/shared/config/env";
 import { getPrisma } from "@/shared/lib/prisma";
 import { assertContentStatusTransition } from "@/modules/workflow/domain/phase-one-workflow";
 import {
@@ -19,16 +19,46 @@ import {
 } from "../domain/design-provider";
 import { CANVA_SLICE_V1, isSliceOneCanvaEligible } from "../domain/canva-slice";
 import { getCanvaDesignExecutionProvider } from "../infrastructure/design-provider-registry";
+import { buildDesignInputContract } from "../domain/design-input-contract";
+import { canTriggerDesignFromStatus } from "../domain/design-readiness-gate";
+import { DESIGN_MAX_AUTO_RETRIES } from "../domain/design-workflow-contract";
+import {
+  buildDesignRequestFingerprint,
+  buildDesignSourceIdentity,
+} from "../domain/design-request-fingerprint";
 
 function buildRequestFingerprint(input: {
-  contentItemId: string;
+  sourceIdentity: string;
   templateId: string;
-  title: string;
-  copy: string;
+  fieldMappings: Record<string, string>;
 }) {
-  return createHash("sha256")
-    .update(JSON.stringify(input))
-    .digest("hex");
+  return buildDesignRequestFingerprint({
+    provider: DesignProvider.CANVA,
+    sourceIdentity: input.sourceIdentity,
+    templateId: input.templateId,
+    fieldMappings: input.fieldMappings,
+  });
+}
+
+function hasOperatorSelectedDesignVariation(...values: unknown[]) {
+  return values.some((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (typeof record.selectedVariationId === "string" && record.selectedVariationId.trim().length > 0) {
+      return true;
+    }
+
+    const selectedVariation = record.selectedVariation;
+    if (!selectedVariation || typeof selectedVariation !== "object" || Array.isArray(selectedVariation)) {
+      return false;
+    }
+
+    const selectedVariationRecord = selectedVariation as Record<string, unknown>;
+    return typeof selectedVariationRecord.id === "string" && selectedVariationRecord.id.trim().length > 0;
+  });
 }
 
 function toJsonValue(payload: unknown): Prisma.InputJsonValue {
@@ -100,8 +130,12 @@ async function failDesignRequest(input: {
   });
 }
 
+/**
+ * @deprecated Replaced by canTriggerDesignFromStatus from design-readiness-gate.
+ * Left here as a named shim so readers can see the migration path.
+ */
 function canTriggerCanvaFromStatus(status: ContentStatus) {
-  return status === ContentStatus.CONTENT_APPROVED || status === ContentStatus.DESIGN_FAILED;
+  return canTriggerDesignFromStatus(status);
 }
 
 function buildAttemptContext(input: {
@@ -132,10 +166,15 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
     return;
   }
 
-  const contentItem = await prisma.contentItem.findUnique({
-    where: { id: contentItemId },
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
     include: {
+      sourceLinks: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
       designRequests: {
+        where: { deletedAt: null },
         orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
       },
     },
@@ -173,11 +212,21 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
     return;
   }
 
+  const sourceLink = contentItem.sourceLinks[0] ?? null;
+  const sourceIdentity = buildDesignSourceIdentity({
+    canonicalKey: contentItem.canonicalKey,
+    spreadsheetId: sourceLink?.spreadsheetId,
+    worksheetId: sourceLink?.worksheetId,
+    rowId: sourceLink?.rowId,
+  });
+  const fieldMappings = {
+    [CANVA_SLICE_V1.datasetFields.title]: contentItem.title,
+    [CANVA_SLICE_V1.datasetFields.body]: contentItem.copy,
+  };
   const requestFingerprint = buildRequestFingerprint({
-    contentItemId: contentItem.id,
+    sourceIdentity,
     templateId: profileMapping.externalTemplateId,
-    title: contentItem.title,
-    copy: contentItem.copy,
+    fieldMappings,
   });
 
   const matchingRequests = contentItem.designRequests.filter(
@@ -212,6 +261,19 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
         ? 1
         : latestAttempt;
 
+  // Retry limit enforcement — DESIGN_MAX_AUTO_RETRIES is the maximum number of
+  // total attempts allowed per unique content fingerprint.  The view model
+  // surfaces RETRY_EXHAUSTED to the operator before they reach this point.
+  if (nextAttemptNumber > DESIGN_MAX_AUTO_RETRIES) {
+    return;
+  }
+
+  const designContract = buildDesignInputContract({
+    contentItem,
+    templateId: profileMapping.externalTemplateId,
+    attemptNumber: nextAttemptNumber,
+  });
+
   let designRequest:
     | {
         id: string;
@@ -220,9 +282,10 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
     | undefined;
 
   try {
+    const includeMockExecution = CANVA_PROVIDER_MODE !== "REAL";
     assertContentStatusTransition({
       currentStatus: contentItem.currentStatus,
-      nextStatus: ContentStatus.DESIGN_REQUESTED,
+      nextStatus: ContentStatus.IN_DESIGN,
       reason: "creating a design request",
     });
 
@@ -237,19 +300,21 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
           status: DesignRequestStatus.REQUESTED,
           requestPayload: {
             slice: "canva-v1",
-            execution: {
-              mode: "FAKE_CANVA",
-              simulationScenario: scenario,
-            },
             templateFamily: CANVA_SLICE_V1.templateFamily,
             templateId: profileMapping.externalTemplateId,
             contentItemId: contentItem.id,
             attemptNumber: nextAttemptNumber,
             sentBy: session.email,
-            data: {
-              [CANVA_SLICE_V1.datasetFields.title]: contentItem.title,
-              [CANVA_SLICE_V1.datasetFields.body]: contentItem.copy,
-            },
+            fieldMappings,
+            data: fieldMappings,
+            ...(includeMockExecution
+              ? {
+                  execution: {
+                    mode: "MOCK",
+                    simulationScenario: scenario,
+                  },
+                }
+              : {}),
           },
         },
         select: {
@@ -261,7 +326,7 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
       await tx.contentItem.update({
         where: { id: contentItem.id },
         data: {
-          currentStatus: ContentStatus.DESIGN_REQUESTED,
+          currentStatus: ContentStatus.IN_DESIGN,
         },
       });
 
@@ -269,9 +334,9 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
         data: {
           contentItemId: contentItem.id,
           fromStatus: contentItem.currentStatus,
-          toStatus: ContentStatus.DESIGN_REQUESTED,
+          toStatus: ContentStatus.IN_DESIGN,
           actorEmail: session.email,
-          note: `Design attempt ${nextAttemptNumber} created for ${CANVA_SLICE_V1.templateFamily}.`,
+          note: `Design attempt ${nextAttemptNumber} submitted for ${CANVA_SLICE_V1.templateFamily}.`,
         },
       });
 
@@ -290,52 +355,43 @@ export async function runCanvaDesignRequestAction(formData: FormData) {
 
   try {
     const submitted = await provider.submitRequest({
-      contentItemId: contentItem.id,
-      title: contentItem.title,
-      copy: contentItem.copy,
-      templateId: profileMapping.externalTemplateId,
-      attemptNumber: nextAttemptNumber,
+      ...designContract,
       scenario,
+      requestPayload: {
+        slice: "canva-v1",
+        templateFamily: CANVA_SLICE_V1.templateFamily,
+        templateId: profileMapping.externalTemplateId,
+        contentItemId: contentItem.id,
+        attemptNumber: nextAttemptNumber,
+        sentBy: session.email,
+        fieldMappings,
+        data: fieldMappings,
+        ...(CANVA_PROVIDER_MODE !== "REAL"
+          ? {
+              execution: {
+                mode: "MOCK",
+                simulationScenario: scenario,
+              },
+            }
+          : {}),
+      },
     });
 
-    await prisma.$transaction(async (tx) => {
-      assertContentStatusTransition({
-        currentStatus: ContentStatus.DESIGN_REQUESTED,
-        nextStatus: ContentStatus.DESIGN_IN_PROGRESS,
-        reason: "provider accepted the design request",
-      });
-
-      await tx.designRequest.update({
-        where: { id: designRequest.id },
-        data: {
-          externalRequestId: submitted.externalRequestId,
-          status: DesignRequestStatus.IN_PROGRESS,
-          resultPayload: toJsonValue(submitted.payload),
-        },
-      });
-
-      await tx.contentItem.update({
-        where: { id: contentItem.id },
-        data: {
-          currentStatus: ContentStatus.DESIGN_IN_PROGRESS,
-        },
-      });
-
-      await tx.statusEvent.create({
-        data: {
-          contentItemId: contentItem.id,
-          fromStatus: ContentStatus.DESIGN_REQUESTED,
-          toStatus: ContentStatus.DESIGN_IN_PROGRESS,
-          actorEmail: session.email,
-          note: `Fake Canva accepted design attempt ${nextAttemptNumber}. Refresh the request to resolve success, delay, or failure.`,
-        },
-      });
+    // Item is already IN_DESIGN from the creation tx above.
+    // Only the DesignRequest internal status transitions here (REQUESTED → IN_PROGRESS).
+    await prisma.designRequest.update({
+      where: { id: designRequest.id },
+      data: {
+        externalRequestId: submitted.externalRequestId,
+        status: DesignRequestStatus.IN_PROGRESS,
+        resultPayload: toJsonValue(submitted.payload),
+      },
     });
   } catch (error) {
     await failDesignRequest({
       designRequestId: designRequest.id,
       contentItemId: contentItem.id,
-      previousStatus: ContentStatus.DESIGN_REQUESTED,
+      previousStatus: ContentStatus.IN_DESIGN,
       sessionEmail: session.email,
       error,
       stage: "provider_submit",
@@ -362,10 +418,11 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
     return;
   }
 
-  const contentItem = await prisma.contentItem.findUnique({
-    where: { id: contentItemId },
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
     include: {
       designRequests: {
+        where: { deletedAt: null },
         orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
       },
     },
@@ -408,12 +465,8 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
     });
 
     if (syncResult.state === "IN_PROGRESS") {
-      assertContentStatusTransition({
-        currentStatus: ContentStatus.DESIGN_IN_PROGRESS,
-        nextStatus: ContentStatus.DESIGN_IN_PROGRESS,
-        reason: "provider returned an in-progress sync payload",
-      });
-
+      // No ContentItem transition — item stays IN_DESIGN (or DESIGN_IN_PROGRESS for legacy records).
+      // Only the DesignRequest internal status is updated here.
       await prisma.designRequest.update({
         where: { id: activeRequest.id },
         data: {
@@ -434,7 +487,7 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
       await failDesignRequest({
         designRequestId: activeRequest.id,
         contentItemId: contentItem.id,
-        previousStatus: ContentStatus.DESIGN_IN_PROGRESS,
+        previousStatus: contentItem.currentStatus,
         sessionEmail: session.email,
         error: providerError,
         stage: "provider_sync",
@@ -454,7 +507,7 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
 
     await prisma.$transaction(async (tx) => {
       assertContentStatusTransition({
-        currentStatus: ContentStatus.DESIGN_IN_PROGRESS,
+        currentStatus: contentItem.currentStatus,
         nextStatus: ContentStatus.DESIGN_READY,
         reason: "provider completed the design request successfully",
       });
@@ -486,7 +539,7 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
           locale: contentItem.sourceLocale,
           externalUrl: syncResult.asset.thumbnailUrl,
           metadata: toJsonValue({
-            providerMode: "FAKE_CANVA",
+            providerMode: "MOCK",
             designId: syncResult.asset.designId,
             editUrl: syncResult.asset.editUrl,
           }),
@@ -500,7 +553,7 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
           locale: contentItem.sourceLocale,
           externalUrl: syncResult.asset.thumbnailUrl,
           metadata: toJsonValue({
-            providerMode: "FAKE_CANVA",
+            providerMode: "MOCK",
             designId: syncResult.asset.designId,
             editUrl: syncResult.asset.editUrl,
           }),
@@ -510,7 +563,7 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
       await tx.statusEvent.create({
         data: {
           contentItemId: contentItem.id,
-          fromStatus: ContentStatus.DESIGN_IN_PROGRESS,
+          fromStatus: contentItem.currentStatus,
           toStatus: ContentStatus.DESIGN_READY,
           actorEmail: session.email,
           note: `Design attempt ${activeRequest.attemptNumber} resolved successfully and is ready for review.`,
@@ -521,7 +574,7 @@ export async function syncCanvaDesignRequestAction(formData: FormData) {
     await failDesignRequest({
       designRequestId: activeRequest.id,
       contentItemId: contentItem.id,
-      previousStatus: ContentStatus.DESIGN_IN_PROGRESS,
+      previousStatus: contentItem.currentStatus,
       sessionEmail: session.email,
       error,
       stage: "provider_sync",
@@ -547,17 +600,36 @@ export async function approveDesignReadyAction(formData: FormData) {
     return;
   }
 
-  const contentItem = await prisma.contentItem.findUnique({
-    where: { id: contentItemId },
+  const contentItem = await prisma.contentItem.findFirst({
+    where: { id: contentItemId, deletedAt: null },
     include: {
       designRequests: {
+        where: { deletedAt: null },
         orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
+        take: 1,
+      },
+      assets: {
+        where: { deletedAt: null },
+        orderBy: [{ slideIndex: "asc" }, { createdAt: "desc" }],
         take: 1,
       },
     },
   });
 
   if (!contentItem || contentItem.currentStatus !== ContentStatus.DESIGN_READY) {
+    return;
+  }
+
+  const latestDesignRequest = contentItem.designRequests[0];
+  const latestAsset = contentItem.assets[0];
+  const requiresVariationSelection =
+    latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE ||
+    latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL;
+
+  if (
+    requiresVariationSelection &&
+    !hasOperatorSelectedDesignVariation(latestAsset?.metadata, latestDesignRequest?.resultPayload)
+  ) {
     return;
   }
 
@@ -575,9 +647,9 @@ export async function approveDesignReadyAction(formData: FormData) {
       },
     });
 
-    if (contentItem.designRequests[0]) {
+    if (latestDesignRequest) {
       await tx.designRequest.update({
-        where: { id: contentItem.designRequests[0].id },
+        where: { id: latestDesignRequest.id },
         data: {
           status: DesignRequestStatus.APPROVED,
         },

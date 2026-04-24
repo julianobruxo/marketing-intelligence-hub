@@ -9,15 +9,22 @@ import {
   NoteType,
 } from "@prisma/client";
 import { CANVA_SLICE_V1, isSliceOneCanvaEligible } from "@/modules/design-orchestration/domain/canva-slice";
+import {
+  evaluateDesignEligibility,
+  type DesignEligibilityResult,
+  type DesignEligibilityStatus,
+  type OutOfScopeReason,
+} from "@/modules/design-orchestration/domain/design-eligibility";
+import { DESIGN_MAX_AUTO_RETRIES } from "@/modules/design-orchestration/domain/design-workflow-contract";
 import { readOperationalStatusFromPlanningSnapshot } from "@/modules/content-intake/domain/infer-content-status";
 import type { ActiveTemplateMapping, ContentItemDetail, QueueContentItem } from "./content-queries";
 
 export type SemanticWorkflowDecision = {
   internalState: "review" | "posted" | "blocked" | "waiting_for_design";
-  statusKey: "REVIEW" | "PUBLISHED" | "WAITING_FOR_COPY" | "READY_FOR_DESIGN";
+  statusKey: "REVIEW" | "POSTED" | "PUBLISHED" | "BLOCKED" | "WAITING_FOR_COPY" | "READY_FOR_DESIGN" | "READY_TO_PUBLISH";
   visibleStatusLabel: string;
   nextActionLabel: string;
-  baseVisualFamily: "slate" | "green" | "amber" | "lavender";
+  baseVisualFamily: "slate" | "green" | "amber" | "lavender" | "blue";
   overdueOverlay: boolean;
   requiresHumanReview: boolean;
 };
@@ -122,7 +129,71 @@ export type IntegrationReadinessEntry = {
   tone: "sky" | "amber" | "rose" | "emerald" | "slate";
 };
 
+/**
+ * Operator-facing design eligibility panel — consumed by the detail page.
+ * Derived entirely from existing item data; no additional DB queries needed.
+ */
+export type DesignEligibilityView = {
+  status: DesignEligibilityStatus;
+  /** True if the item is eligible and design can be triggered now. */
+  canTrigger: boolean;
+  /** True if the item failed and a retry is still allowed. */
+  canRetry: boolean;
+  headline: string;
+  summary: string;
+  reasons: string[];
+  outOfScopeReasons: OutOfScopeReason[];
+  attemptsUsed: number;
+  attemptsAllowed: number;
+  tone: "sky" | "amber" | "rose" | "emerald" | "slate";
+};
+
+// Re-export domain types so consumers only need one import.
+export type { DesignEligibilityStatus, DesignEligibilityResult, OutOfScopeReason };
+
 type Tone = ContentTimelineEntry["tone"];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal eligibility helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getDesignEligibilityFromQueue(item: QueueContentItem): DesignEligibilityResult {
+  const latestRequest = item.designRequests[0];
+  const hasActiveDesignRequest =
+    latestRequest?.status === DesignRequestStatus.REQUESTED ||
+    latestRequest?.status === DesignRequestStatus.IN_PROGRESS;
+
+  return evaluateDesignEligibility({
+    currentStatus: item.currentStatus,
+    copy: item.copy,
+    title: item.title,
+    contentType: item.contentType,
+    sourceLocale: item.sourceLocale,
+    hasActiveDesignRequest,
+    latestAttemptNumber: latestRequest?.attemptNumber ?? 0,
+    hasMappingAvailable: item.queueMappingAvailability === "AVAILABLE",
+  });
+}
+
+function getDesignEligibilityFromDetail(item: ContentItemDetail): DesignEligibilityResult {
+  const latestRequest = item.designRequests[0];
+  const hasActiveDesignRequest =
+    latestRequest?.status === DesignRequestStatus.REQUESTED ||
+    latestRequest?.status === DesignRequestStatus.IN_PROGRESS;
+
+  return evaluateDesignEligibility({
+    currentStatus: item.currentStatus,
+    copy: item.copy,
+    title: item.title,
+    contentType: item.contentType,
+    sourceLocale: item.sourceLocale,
+    hasActiveDesignRequest,
+    latestAttemptNumber: latestRequest?.attemptNumber ?? 0,
+    hasMappingAvailable: item.activeTemplateMappings.length > 0,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function formatLabel(value: string) {
   return value.toLowerCase().replaceAll("_", " ");
@@ -133,6 +204,21 @@ function getLatestApprovalByStage(
   stage: ApprovalStage,
 ) {
   return item.approvals.find((approval) => approval.stage === stage) ?? null;
+}
+
+function getLatestDesignRequest(
+  item: Pick<QueueContentItem | ContentItemDetail, "designRequests">,
+) {
+  return item.designRequests[0] ?? null;
+}
+
+export function isDesignRejection(
+  item: Pick<QueueContentItem | ContentItemDetail, "currentStatus" | "designRequests">,
+) {
+  return (
+    item.currentStatus === ContentStatus.CHANGES_REQUESTED &&
+    getLatestDesignRequest(item)?.status === DesignRequestStatus.REJECTED
+  );
 }
 
 function getScenarioLabel(request: ContentItemDetail["designRequests"][number]) {
@@ -154,44 +240,22 @@ function getOperationalStatus(item: Pick<ContentItemDetail, "planningSnapshot">)
   return readOperationalStatusFromPlanningSnapshot(item.planningSnapshot);
 }
 
-function readSemanticFacts(planningSnapshot: unknown) {
-  if (!planningSnapshot || typeof planningSnapshot !== "object") {
-    return null;
-  }
+type SemanticFacts = {
+  is_overdue: boolean;
+  is_empty_or_unusable: boolean;
+  needs_human_review: boolean;
+  has_final_copy: boolean;
+  is_published: boolean;
+};
 
-  const snapshot = planningSnapshot as Record<string, unknown>;
-  const sourceMetadata =
-    snapshot.sourceMetadata && typeof snapshot.sourceMetadata === "object"
-      ? (snapshot.sourceMetadata as Record<string, unknown>)
-      : null;
-  const extra =
-    sourceMetadata?.extra && typeof sourceMetadata.extra === "object"
-      ? (sourceMetadata.extra as Record<string, unknown>)
-      : null;
-  const aiSemantic =
-    extra?.aiSemantic && typeof extra.aiSemantic === "object"
-      ? (extra.aiSemantic as Record<string, unknown>)
-      : null;
-
-  if (!aiSemantic) {
-    return null;
-  }
-
-  const readBoolean = (key: string) => aiSemantic[key] === true;
-
-  return {
-    has_editorial_brief: readBoolean("has_editorial_brief"),
-    has_final_copy: readBoolean("has_final_copy"),
-    is_published: readBoolean("is_published"),
-    is_overdue: aiSemantic.is_overdue === true,
-    is_empty_or_unusable: readBoolean("is_empty_or_unusable"),
-    needs_human_review: readBoolean("needs_human_review"),
-  };
+function readSemanticFacts(_planningSnapshot: unknown): SemanticFacts | null {
+  return null;
 }
 
 const SEMANTIC_BASE_STATE_CARRIER_STATUSES = new Set<ContentStatus>([
   ContentStatus.IMPORTED,
   ContentStatus.IN_REVIEW,
+  ContentStatus.BLOCKED,
   ContentStatus.WAITING_FOR_COPY,
   ContentStatus.READY_FOR_DESIGN,
   ContentStatus.CONTENT_APPROVED,
@@ -210,30 +274,18 @@ export function getSemanticWorkflowDecision(
     return null;
   }
 
-  if (semantic?.is_empty_or_unusable) {
-    return {
-      internalState: "review",
-      statusKey: "REVIEW",
-      visibleStatusLabel: "Review workflow state",
-      nextActionLabel: "Review workflow state",
-      baseVisualFamily: "slate",
-      overdueOverlay,
-      requiresHumanReview: true,
-    };
-  }
-
   const published =
     item.currentStatus === ContentStatus.POSTED ||
     item.currentStatus === ContentStatus.PUBLISHED_MANUALLY ||
-    operationalStatus === "PUBLISHED" ||
-    semantic?.is_published === true;
+    operationalStatus === "POSTED" ||
+    operationalStatus === "PUBLISHED";
 
   if (published) {
     return {
       internalState: "posted",
-      statusKey: "PUBLISHED",
+      statusKey: "POSTED",
       visibleStatusLabel: "POSTED",
-      nextActionLabel: "POSTED",
+      nextActionLabel: "Posted",
       baseVisualFamily: "green",
       overdueOverlay: false,
       requiresHumanReview: semantic?.needs_human_review === true,
@@ -244,31 +296,26 @@ export function getSemanticWorkflowDecision(
     return null;
   }
 
-  if (
-    operationalStatus === "WAITING_FOR_COPY" ||
-    (semantic?.has_editorial_brief === true && semantic.has_final_copy === false)
-  ) {
+  if (operationalStatus === "BLOCKED" || operationalStatus === "WAITING_FOR_COPY") {
     return {
       internalState: "blocked",
-      statusKey: "WAITING_FOR_COPY",
-      visibleStatusLabel: "Waiting for Copy",
-      nextActionLabel: "Await Copy",
+      statusKey: operationalStatus === "BLOCKED" ? "BLOCKED" : "WAITING_FOR_COPY",
+      visibleStatusLabel: "BLOCKED",
+      nextActionLabel: "Blocked",
       baseVisualFamily: "amber",
       overdueOverlay,
       requiresHumanReview: semantic?.needs_human_review === true,
     };
   }
 
-  if (
-    operationalStatus === "READY_FOR_DESIGN" ||
-    semantic?.has_final_copy === true
-  ) {
+  if (operationalStatus === "READY_TO_PUBLISH" || operationalStatus === "READY_FOR_DESIGN") {
+    const readyToPublish = operationalStatus === "READY_TO_PUBLISH";
     return {
       internalState: "waiting_for_design",
-      statusKey: "READY_FOR_DESIGN",
-      visibleStatusLabel: "Generate Design",
-      nextActionLabel: "Generate Design",
-      baseVisualFamily: "lavender",
+      statusKey: readyToPublish ? "READY_TO_PUBLISH" : "READY_FOR_DESIGN",
+      visibleStatusLabel: readyToPublish ? "PA" : "DESIGN",
+      nextActionLabel: readyToPublish ? "Post to LinkedIn" : "Generate Design",
+      baseVisualFamily: readyToPublish ? "blue" : "lavender",
       overdueOverlay,
       requiresHumanReview: semantic?.needs_human_review === true,
     };
@@ -279,37 +326,48 @@ export function getSemanticWorkflowDecision(
 
 function buildOperationalLaneDetail(operationalStatus: ReturnType<typeof getOperationalStatus>) {
   switch (operationalStatus) {
+    case "BLOCKED":
     case "WAITING_FOR_COPY":
       return {
         lane: "BLOCKED" as const,
-        nextActionLabel: "Collect the missing copy",
+        nextActionLabel: "Blocked",
         waitingOn: "Copywriter",
-        blocker: "The row is real, but the LinkedIn copy is not present yet.",
-        reason: "The spreadsheet row is a valid operational item, but it still needs copy before design can start.",
+        blocker: "The row is real, but a required title or LinkedIn copy field is missing.",
+        reason: "The spreadsheet row is a valid operational item, but it needs required content before it can move forward.",
         tone: "amber" as const,
       };
     case "LATE":
       return {
-        lane: "FAILED" as const,
+        lane: "BLOCKED" as const,
         nextActionLabel: "Continue process",
         waitingOn: "Internal operator",
         blocker: null,
         reason: "The row is still operationally valid, but the deadline has passed and it should be handled urgently.",
-        tone: "rose" as const,
+        tone: "amber" as const,
       };
     case "READY_FOR_DESIGN":
       return {
         lane: "NEEDS_ACTION" as const,
-        nextActionLabel: "Send this item to design",
+        nextActionLabel: "Generate Design",
         waitingOn: "Internal operator",
         blocker: null,
-        reason: "The row has the required planning signals and is ready for the design handoff.",
+        reason: "The row has approved LinkedIn copy and is ready for the design handoff.",
         tone: "sky" as const,
       };
+    case "READY_TO_PUBLISH":
+      return {
+        lane: "IN_PROGRESS" as const,
+        nextActionLabel: "Post to LinkedIn",
+        waitingOn: "Internal operator",
+        blocker: null,
+        reason: "The row has approved LinkedIn copy and an image link, so it can move to publishing.",
+        tone: "sky" as const,
+      };
+    case "POSTED":
     case "PUBLISHED":
       return {
         lane: "READY" as const,
-        nextActionLabel: "No further action needed",
+        nextActionLabel: "Posted",
         waitingOn: "No further action",
         blocker: null,
         reason: "The source sheet already marks this row as published, so the item is treated as concluded.",
@@ -380,12 +438,12 @@ function buildApprovalCheckpoint(
     actor: approval.actor.name ?? approval.actor.email,
     note: approval.note,
     occurredAt: approval.createdAt,
-    tone: "rose",
+    tone: "amber",
   };
 }
 
 function buildQueueLaneDetails(item: QueueContentItem) {
-  const latestDesignRequest = item.designRequests[0];
+  const latestDesignRequest = getLatestDesignRequest(item);
   const latestStatusEvent = item.statusEvents[0];
   const latestAsset = item.assets[0];
   const latestDesignFailure =
@@ -399,7 +457,7 @@ function buildQueueLaneDetails(item: QueueContentItem) {
     if (semanticDecision.internalState === "posted") {
       return {
         lane: "READY" as const,
-        nextActionLabel: "POSTED",
+        nextActionLabel: "Posted",
         waitingOn: "No further action",
         blocker: null,
         reason: "The source row is explicitly published, so the item is treated as concluded.",
@@ -410,23 +468,30 @@ function buildQueueLaneDetails(item: QueueContentItem) {
     if (semanticDecision.internalState === "blocked") {
       return {
         lane: "BLOCKED" as const,
-        nextActionLabel: "Await Copy",
+        nextActionLabel: "Blocked",
         waitingOn: "Copywriter",
-        blocker: "The row is real, but the LinkedIn copy is not present yet.",
-        reason: "The spreadsheet row is blocked until copy is available.",
+        blocker: "The row is real, but a required title or LinkedIn copy field is missing.",
+        reason: "The spreadsheet row is blocked until the required source fields are available.",
         tone: "amber" as const,
       };
     }
 
     if (semanticDecision.internalState === "waiting_for_design") {
+      const readyToPublish = semanticDecision.statusKey === "READY_TO_PUBLISH";
       return {
-        lane: semanticDecision.overdueOverlay ? ("FAILED" as const) : ("NEEDS_ACTION" as const),
-        nextActionLabel: "Generate Design",
+        lane: semanticDecision.overdueOverlay
+          ? ("FAILED" as const)
+          : readyToPublish
+            ? ("IN_PROGRESS" as const)
+            : ("NEEDS_ACTION" as const),
+        nextActionLabel: readyToPublish ? "Post to LinkedIn" : "Generate Design",
         waitingOn: "Internal operator",
         blocker: null,
         reason: semanticDecision.overdueOverlay
-          ? "The item is overdue, but its base workflow state is still ready for design."
-          : "Copy is present and the item is ready for the design handoff.",
+          ? "The item is overdue, but its base workflow state is still actionable."
+          : readyToPublish
+            ? "Copy and image are present, so the item is ready for publishing."
+            : "Copy is present and the item is ready for the design handoff.",
         tone: semanticDecision.overdueOverlay ? ("rose" as const) : ("sky" as const),
       };
     }
@@ -454,7 +519,20 @@ function buildQueueLaneDetails(item: QueueContentItem) {
         reason: "Planning data is imported, but the content item still needs editorial review.",
         tone: "sky" as const,
       };
-    case ContentStatus.CONTENT_APPROVED:
+    case ContentStatus.CONTENT_APPROVED: {
+      const eligibility = getDesignEligibilityFromQueue(item);
+
+      if (eligibility.status === "OUT_OF_SCOPE") {
+        return {
+          lane: "BLOCKED" as const,
+          nextActionLabel: "Design not available in current phase",
+          waitingOn: "Internal operator",
+          blocker: eligibility.reasons.join(" "),
+          reason: "This item is outside the current phase-1 design automation scope.",
+          tone: "slate" as const,
+        };
+      }
+
       if (item.queueMappingAvailability === "MISSING") {
         return {
           lane: "BLOCKED" as const,
@@ -469,7 +547,7 @@ function buildQueueLaneDetails(item: QueueContentItem) {
 
       return {
         lane: "NEEDS_ACTION" as const,
-        nextActionLabel: "Start the design attempt",
+        nextActionLabel: "Generate Design",
         waitingOn: "Internal operator",
         blocker: null,
         reason: item.queueActiveRouteLabel
@@ -477,10 +555,11 @@ function buildQueueLaneDetails(item: QueueContentItem) {
           : "Content is approved and ready for the next design handoff.",
         tone: "sky" as const,
       };
+    }
     case ContentStatus.DESIGN_READY:
       return {
         lane: "NEEDS_ACTION" as const,
-        nextActionLabel: "Review and approve the generated design",
+        nextActionLabel: "Approve Design",
         waitingOn: "Design approver",
         blocker: latestAsset?.externalUrl ? null : "The design is ready, but no linked asset URL is stored yet.",
         reason: latestAsset?.externalUrl
@@ -488,31 +567,93 @@ function buildQueueLaneDetails(item: QueueContentItem) {
           : "A design result is ready and needs a human decision before publishing prep.",
         tone: "sky" as const,
       };
+    case ContentStatus.IN_DESIGN:
     case ContentStatus.DESIGN_REQUESTED:
     case ContentStatus.DESIGN_IN_PROGRESS:
       return {
-        lane: "IN_PROGRESS" as const,
-        nextActionLabel: "Refresh design status",
+        lane: "NEEDS_ACTION" as const,
+        nextActionLabel: "In Design",
         waitingOn: "Design provider",
         blocker: null,
         reason: "A provider handoff is active and still awaiting resolution.",
         tone: "amber" as const,
       };
-    case ContentStatus.DESIGN_FAILED:
-      return {
-        lane: "FAILED" as const,
-        nextActionLabel: "Inspect failure and retry",
-        waitingOn: "Internal operator",
-        blocker: latestDesignFailure,
-        reason:
-          latestStatusEvent?.note ??
-          "The last design attempt failed and needs human intervention before it can continue.",
-        tone: "rose" as const,
-      };
-    case ContentStatus.CHANGES_REQUESTED:
+    case ContentStatus.DESIGN_FAILED: {
+      const eligibility = getDesignEligibilityFromQueue(item);
+      const retryExhausted = eligibility.status === "RETRY_EXHAUSTED";
+
       return {
         lane: "BLOCKED" as const,
-        nextActionLabel: "Revise content and resubmit",
+        nextActionLabel: "Design Failed",
+        waitingOn: "Internal operator",
+        blocker: retryExhausted
+          ? eligibility.reasons.join(" ")
+          : latestDesignFailure,
+        reason: retryExhausted
+          ? `All ${DESIGN_MAX_AUTO_RETRIES} allowed design attempts have been exhausted for this content fingerprint.`
+          : (latestStatusEvent?.note ??
+            "The last design attempt failed and needs human intervention before it can continue."),
+        tone: "amber" as const,
+      };
+    }
+    case ContentStatus.BLOCKED:
+    case ContentStatus.READY_FOR_DESIGN:
+    case ContentStatus.WAITING_FOR_COPY: {
+      const eligibility = getDesignEligibilityFromQueue(item);
+
+      if (eligibility.status === "OUT_OF_SCOPE") {
+        return {
+          lane: "BLOCKED" as const,
+          nextActionLabel: "Design not available in current phase",
+          waitingOn: "Internal operator",
+          blocker: eligibility.reasons.join(" "),
+          reason: "This item is outside the current phase-1 design automation scope.",
+          tone: "slate" as const,
+        };
+      }
+
+      if (eligibility.status === "MISSING_PREREQUISITES") {
+        return {
+          lane: "BLOCKED" as const,
+          nextActionLabel: "Complete missing content before design",
+          waitingOn: "Copywriter",
+          blocker: eligibility.reasons.join(" "),
+          reason: "Required content fields are absent.  Design cannot start until they are provided.",
+          tone: "amber" as const,
+        };
+      }
+
+      // Eligible — semantic path may already have caught this; this is the fallback
+      return {
+        lane: "NEEDS_ACTION" as const,
+        nextActionLabel: "Generate Design",
+        waitingOn: "Internal operator",
+        blocker: null,
+        reason: item.queueActiveRouteLabel
+          ? `Copy is present and routed through ${item.queueActiveRouteLabel}.`
+          : "Copy is present and the item is ready for the design handoff.",
+        tone: "sky" as const,
+      };
+    }
+    case ContentStatus.CHANGES_REQUESTED:
+      if (isDesignRejection(item)) {
+        return {
+          lane: "BLOCKED" as const,
+          nextActionLabel: "Changes Requested",
+          waitingOn: "Internal operator",
+          blocker:
+            latestDesignRequest?.errorMessage ??
+            latestStatusEvent?.note ??
+            "The design was rejected and needs a revised attempt.",
+          reason:
+            "The last design result was rejected. Review the feedback and retry the design with the revised brief.",
+          tone: "amber" as const,
+        };
+      }
+
+      return {
+        lane: "BLOCKED" as const,
+        nextActionLabel: "Changes Requested",
         waitingOn: "Internal editor",
         blocker:
           latestStatusEvent?.note ?? "Approval feedback still needs to be addressed.",
@@ -531,39 +672,46 @@ function buildQueueLaneDetails(item: QueueContentItem) {
       };
     case ContentStatus.DESIGN_APPROVED:
       return {
-        lane: "NEEDS_ACTION" as const,
-        nextActionLabel: item.translationRequired
-          ? "Advance the translation checkpoint"
-          : "Prepare the publishing handoff",
-        waitingOn: "Internal operator",
+        lane: "IN_PROGRESS" as const,
+        nextActionLabel: "Pending Approval",
+        waitingOn: "Approver",
         blocker: null,
         reason: item.translationRequired
           ? "Design approval is recorded, and the localized path still needs to be moved into translation review."
           : "Design approval is recorded, and the item can now move into publishing preparation.",
         tone: "sky" as const,
       };
-    case ContentStatus.TRANSLATION_APPROVED:
     case ContentStatus.READY_TO_PUBLISH:
+      return {
+        lane: "NEEDS_ACTION" as const,
+        nextActionLabel: "Ready to Publish",
+        waitingOn: "Internal operator",
+        blocker: null,
+        reason: "Copy and image are present, so the item is ready for publishing.",
+        tone: "sky" as const,
+      };
+    case ContentStatus.TRANSLATION_APPROVED:
     case ContentStatus.PUBLISHED_MANUALLY:
+    case ContentStatus.POSTED:
       return {
         lane: "READY" as const,
         nextActionLabel:
-          item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
-            ? "Publishing fallback completed"
-            : "Prepare the next handoff",
+          item.currentStatus === ContentStatus.TRANSLATION_APPROVED
+            ? "Final Review"
+            : "Posted",
         waitingOn:
-          item.currentStatus === ContentStatus.PUBLISHED_MANUALLY ? "No further action" : "Internal operator",
+          item.currentStatus === ContentStatus.TRANSLATION_APPROVED ? "Internal operator" : "No further action",
         blocker: null,
         reason:
-          item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
-            ? "The manual LinkedIn fallback was already completed for this item."
+          item.currentStatus === ContentStatus.TRANSLATION_APPROVED
+            ? "The item has cleared translation and is ready for the downstream step."
             : "The item has cleared its current checkpoint and is ready for the downstream step.",
         tone: "emerald" as const,
       };
     default:
       return {
         lane: "BLOCKED" as const,
-        nextActionLabel: "Review workflow state",
+        nextActionLabel: "Blocked",
         waitingOn: "Internal operator",
         blocker: "This workflow state needs interpretation before the item can progress.",
         reason: "The item is in a state that needs manual interpretation before it can move on.",
@@ -599,6 +747,7 @@ function getQueuePriority(item: QueueLaneSection["items"][number]) {
       return 3;
     case ContentStatus.IMPORTED:
       return 4;
+    case ContentStatus.IN_DESIGN:
     case ContentStatus.DESIGN_IN_PROGRESS:
       return 5;
     case ContentStatus.DESIGN_REQUESTED:
@@ -651,14 +800,17 @@ export function buildContentTimeline(item: ContentItemDetail): ContentTimelineEn
     description: event.note ?? "A workflow state transition was recorded for this content item.",
     meta: event.actorEmail ?? "System workflow event",
     tone:
-      event.toStatus === ContentStatus.DESIGN_FAILED || event.toStatus === ContentStatus.CHANGES_REQUESTED
+      event.toStatus === ContentStatus.DESIGN_FAILED
         ? "rose"
+        : event.toStatus === ContentStatus.CHANGES_REQUESTED
+          ? "amber"
         : event.toStatus === ContentStatus.DESIGN_READY ||
             event.toStatus === ContentStatus.DESIGN_APPROVED ||
             event.toStatus === ContentStatus.READY_TO_PUBLISH ||
             event.toStatus === ContentStatus.PUBLISHED_MANUALLY
           ? "emerald"
-          : event.toStatus === ContentStatus.DESIGN_REQUESTED ||
+          : event.toStatus === ContentStatus.IN_DESIGN ||
+              event.toStatus === ContentStatus.DESIGN_REQUESTED ||
               event.toStatus === ContentStatus.DESIGN_IN_PROGRESS ||
               event.toStatus === ContentStatus.TRANSLATION_PENDING
             ? "amber"
@@ -731,16 +883,16 @@ export function buildQueueSections(items: QueueContentItem[]): QueueLaneSection[
 
   const laneOrder: QueueLane[] = [
     "NEEDS_ACTION",
-    "IN_PROGRESS",
-    "FAILED",
     "BLOCKED",
+    "FAILED",
+    "IN_PROGRESS",
     "READY",
   ];
 
   const laneCopy: Record<QueueLane, Omit<QueueLaneSection, "count" | "items">> = {
     NEEDS_ACTION: {
       lane: "NEEDS_ACTION",
-      label: "Needs action now",
+      label: "Action",
       description: "Items that should move next through review, design, or approval.",
       emptyTitle: "Nothing needs action right now",
       emptyDescription:
@@ -748,14 +900,14 @@ export function buildQueueSections(items: QueueContentItem[]): QueueLaneSection[
     },
     IN_PROGRESS: {
       lane: "IN_PROGRESS",
-      label: "In progress",
-      description: "Items with an active handoff or provider attempt already underway.",
+      label: "PA",
+      description: "Items pending approval or waiting on a handoff checkpoint.",
       emptyTitle: "No active handoffs are running",
-      emptyDescription: "Nothing is currently waiting on a provider or active downstream process.",
+      emptyDescription: "Nothing is currently pending approval.",
     },
     FAILED: {
       lane: "FAILED",
-      label: "Attention",
+      label: "Overdue",
       description: "Items that need urgent operator attention because they are overdue or hit a workflow failure.",
       emptyTitle: "Nothing urgent needs attention",
       emptyDescription: "There are no overdue items or workflow failures needing intervention right now.",
@@ -769,7 +921,7 @@ export function buildQueueSections(items: QueueContentItem[]): QueueLaneSection[
     },
     READY: {
       lane: "READY",
-      label: "Ready",
+      label: "Complete",
       description: "Items that have cleared the current checkpoint and are ready for the next handoff.",
       emptyTitle: "No completed handoffs are waiting",
       emptyDescription: "Nothing is sitting in a ready state waiting for the next operational step.",
@@ -830,23 +982,27 @@ export function buildApprovalCheckpoints(
 
 export function buildOperationalSummary(item: ContentItemDetail): OperationalSummary {
   const [publishCheckpoint, translationCheckpoint] = buildApprovalCheckpoints(item);
-  const latestDesignRequest = item.designRequests[0];
+  const latestDesignRequest = getLatestDesignRequest(item);
+  const latestStatusEvent = item.statusEvents[0];
   const latestAsset = item.assets[item.assets.length - 1];
   const operationalStatus = getOperationalStatus(item);
 
   if (
     item.currentStatus === ContentStatus.IMPORTED ||
     item.currentStatus === ContentStatus.IN_REVIEW ||
+    item.currentStatus === ContentStatus.BLOCKED ||
+    item.currentStatus === ContentStatus.READY_FOR_DESIGN ||
     item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
   ) {
     switch (operationalStatus) {
+      case "BLOCKED":
       case "WAITING_FOR_COPY":
         return {
-          headline: "The row is valid, but copy is still missing",
-          nextStep: "Wait for the spreadsheet copy to be completed before sending this item to design.",
-          afterThisStep: "Once copy exists, the item can move into the design handoff.",
+          headline: "The row is valid, but required content is missing",
+          nextStep: "Complete the missing title or LinkedIn copy in the source spreadsheet before moving this item forward.",
+          afterThisStep: "Once the source fields exist, the item can route directly to design or publishing.",
           waitingOn: "Copywriter",
-          blocker: "The spreadsheet row is operationally valid, but it is waiting on copy.",
+          blocker: "The spreadsheet row is operationally valid, but it is missing a required title or LinkedIn copy.",
           readinessSignal: "The item is still actionable, but not yet ready for design.",
           tone: "amber",
         };
@@ -863,13 +1019,24 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
       case "READY_FOR_DESIGN":
         return {
           headline: "The row is ready for design",
-          nextStep: "Send the item to design once the copy owner confirms it is ready.",
+          nextStep: "Generate the design from the approved copy in the source spreadsheet.",
           afterThisStep: "The item can move into the regular design and approval path.",
           waitingOn: "Internal operator",
           blocker: null,
           readinessSignal: "The row has enough planning signal to begin the design stage.",
           tone: "emerald",
         };
+      case "READY_TO_PUBLISH":
+        return {
+          headline: "The row is ready to publish",
+          nextStep: "Review the existing image link and move the item through the publishing handoff.",
+          afterThisStep: "After posting, this item will be marked as posted.",
+          waitingOn: "Internal operator",
+          blocker: null,
+          readinessSignal: "The row has copy and image ready.",
+          tone: "emerald",
+        };
+      case "POSTED":
       case "PUBLISHED":
         return {
           headline: "The source sheet already marks this row as published",
@@ -896,16 +1063,26 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
   }
 
   if (item.currentStatus === ContentStatus.DESIGN_FAILED) {
+    const eligibility = getDesignEligibilityFromDetail(item);
+    const retryExhausted = eligibility.status === "RETRY_EXHAUSTED";
+
     return {
-      headline: "Design attempt failed",
-      nextStep: "Inspect the stored provider error, adjust if needed, and trigger a retry.",
-      afterThisStep: "A successful retry will move the item back into the active design path.",
+      headline: "Design Failed",
+      nextStep: retryExhausted
+        ? "All allowed attempts have been exhausted.  Update the copy or title to generate a new content fingerprint, or escalate for manual resolution."
+        : "Inspect the stored provider error, adjust if needed, and trigger a retry.",
+      afterThisStep: retryExhausted
+        ? "Once the content fingerprint changes (via a copy or title update), a fresh set of attempts becomes available."
+        : "A successful retry will move the item back into the active design path.",
       waitingOn: "Internal operator",
-      blocker:
-        latestDesignRequest?.errorMessage ??
-        latestDesignRequest?.errorCode ??
-        "The last provider attempt failed.",
-      readinessSignal: "A retry can be started from this detail view.",
+      blocker: retryExhausted
+        ? `All ${DESIGN_MAX_AUTO_RETRIES} allowed design attempts have been exhausted for this content snapshot.`
+        : (latestDesignRequest?.errorMessage ??
+          latestDesignRequest?.errorCode ??
+          "The last provider attempt failed."),
+      readinessSignal: retryExhausted
+        ? `Attempts used: ${latestDesignRequest?.attemptNumber ?? 0} / ${DESIGN_MAX_AUTO_RETRIES}.  No automated retries remain.`
+        : "A retry can be started from this detail view.",
       tone: "rose",
     };
   }
@@ -936,6 +1113,27 @@ export function buildOperationalSummary(item: ContentItemDetail): OperationalSum
         ? "A design asset is linked back to the canonical content item."
         : "The design request is ready, but the output link still needs verification.",
       tone: "sky",
+    };
+  }
+
+  if (isDesignRejection(item)) {
+    const rejectionPayload =
+      latestDesignRequest?.resultPayload && typeof latestDesignRequest.resultPayload === "object"
+        ? (latestDesignRequest.resultPayload as Record<string, unknown>)
+        : null;
+    const rejectionFeedback =
+      typeof rejectionPayload?.feedback === "string" && rejectionPayload.feedback.trim().length > 0
+        ? rejectionPayload.feedback.trim()
+        : null;
+
+    return {
+      headline: "Design changes were requested",
+      nextStep: "Review the design feedback, revise the brief or template selection, and retry the design.",
+      afterThisStep: "A fresh design attempt can be triggered once the feedback has been addressed.",
+      waitingOn: "Internal operator",
+      blocker: latestDesignRequest?.errorMessage ?? rejectionFeedback ?? latestStatusEvent?.note ?? null,
+      readinessSignal: "The latest design attempt was rejected and needs a revised retry.",
+      tone: "amber",
     };
   }
 
@@ -1220,6 +1418,25 @@ export function buildDesignAttemptHistory(item: ContentItemDetail): DesignAttemp
       ? `${request.profileMapping.displayName} / ${formatLabel(request.profileMapping.designProvider)}`
       : "No mapping recorded";
 
+    if (request.status === DesignRequestStatus.REJECTED) {
+      return {
+        id: request.id,
+        attemptNumber: request.attemptNumber,
+        statusLabel: formatLabel(request.status),
+        headline: `Attempt ${request.attemptNumber} was rejected`,
+        summary:
+          request.errorMessage ?? "The design was rejected and needs a revised retry.",
+        recoveryHint: "Review the feedback, revise the brief, and retry the design.",
+        simulationScenario: scenario,
+        templateLabel: mappingLabel,
+        externalRequestId: request.externalRequestId ?? null,
+        errorCode: request.errorCode ?? null,
+        errorMessage: request.errorMessage ?? null,
+        updatedAt: request.updatedAt,
+        tone: "amber",
+      };
+    }
+
     if (request.status === DesignRequestStatus.FAILED) {
       return {
         id: request.id,
@@ -1331,22 +1548,37 @@ export function buildIntegrationReadinessEntries(item: ContentItemDetail): Integ
       detail: "This keeps the spreadsheet-to-app handoff visible without exposing technical orchestration details.",
       tone: hasImportTrace ? "sky" : "amber",
     },
-    {
-      id: "design",
-      label: "Visual route",
-      status: routing.status === "MISSING" ? "PENDING" : "READY",
-      summary:
-        latestDesignRequest?.requestPayload &&
-        typeof latestDesignRequest.requestPayload === "object" &&
-        "execution" in (latestDesignRequest.requestPayload as Record<string, unknown>)
-          ? "A visual request is already recorded for this item."
-          : "The visual route is ready when this item reaches the design step.",
-      detail:
-        routing.status === "MISSING"
-          ? "A template route still needs to be defined for this item before a design handoff can be used."
-          : `Current route: ${routing.activeRouteLabel}.`,
-      tone: routing.status === "MISSING" ? "amber" : "emerald",
-    },
+    (() => {
+      const designEligibility = getDesignEligibilityFromDetail(item);
+      const isOutOfScope = designEligibility.status === "OUT_OF_SCOPE";
+
+      return {
+        id: "design",
+        label: "Visual route",
+        status: isOutOfScope
+          ? ("OUT_OF_SCOPE" as const)
+          : routing.status === "MISSING"
+            ? ("PENDING" as const)
+            : ("READY" as const),
+        summary: isOutOfScope
+          ? designEligibility.reasons[0] ?? "This item is outside the current phase-1 design scope."
+          : latestDesignRequest?.requestPayload &&
+              typeof latestDesignRequest.requestPayload === "object" &&
+              "execution" in (latestDesignRequest.requestPayload as Record<string, unknown>)
+            ? "A visual request is already recorded for this item."
+            : "The visual route is ready when this item reaches the design step.",
+        detail: isOutOfScope
+          ? `Out-of-scope reason(s): ${designEligibility.outOfScopeReasons.join(", ") || "see summary above"}.`
+          : routing.status === "MISSING"
+            ? "A template route still needs to be defined for this item before a design handoff can be used."
+            : `Current route: ${routing.activeRouteLabel}.`,
+        tone: isOutOfScope
+          ? ("slate" as const)
+          : routing.status === "MISSING"
+            ? ("amber" as const)
+            : ("emerald" as const),
+      };
+    })(),
     {
       id: "publishing",
       label: "LinkedIn publishing preparation",
@@ -1360,7 +1592,7 @@ export function buildIntegrationReadinessEntries(item: ContentItemDetail): Integ
 
 export function getApprovalSummary(item: QueueContentItem) {
   if (item.currentStatus === ContentStatus.CHANGES_REQUESTED) {
-    return "Approval changes requested";
+    return isDesignRejection(item) ? "Design changes requested" : "Approval changes requested";
   }
 
   if (item.currentStatus === ContentStatus.TRANSLATION_PENDING) {
@@ -1380,6 +1612,7 @@ export function getApprovalSummary(item: QueueContentItem) {
 
   if (
     item.currentStatus === ContentStatus.CONTENT_APPROVED ||
+    item.currentStatus === ContentStatus.IN_DESIGN ||
     item.currentStatus === ContentStatus.DESIGN_REQUESTED ||
     item.currentStatus === ContentStatus.DESIGN_IN_PROGRESS ||
     item.currentStatus === ContentStatus.DESIGN_FAILED ||
@@ -1392,7 +1625,7 @@ export function getApprovalSummary(item: QueueContentItem) {
 }
 
 export function getDesignSummary(item: QueueContentItem) {
-  const designRequest = item.designRequests[0];
+  const designRequest = getLatestDesignRequest(item);
 
   if (!designRequest) {
     if (item.queueMappingAvailability === "AVAILABLE" && item.queueActiveRouteLabel) {
@@ -1408,7 +1641,11 @@ export function getDesignSummary(item: QueueContentItem) {
 
   const label = `Attempt ${designRequest.attemptNumber} / ${formatLabel(designRequest.status)}`;
 
-  if (designRequest.status === DesignRequestStatus.FAILED && designRequest.errorCode) {
+  if (
+    (designRequest.status === DesignRequestStatus.FAILED ||
+      designRequest.status === DesignRequestStatus.REJECTED) &&
+    designRequest.errorCode
+  ) {
     return `${label} / ${designRequest.errorCode}`;
   }
 
@@ -1421,27 +1658,35 @@ export function getShortActionPhrase(item: QueueContentItem): string {
   if (
     item.currentStatus === ContentStatus.IMPORTED ||
     item.currentStatus === ContentStatus.IN_REVIEW ||
+    item.currentStatus === ContentStatus.BLOCKED ||
     item.currentStatus === ContentStatus.PUBLISHED_MANUALLY
   ) {
     switch (operationalStatus) {
+      case "BLOCKED":
+        return "Blocked";
       case "WAITING_FOR_COPY":
-        return "Await Copy";
+        return "Blocked";
       case "LATE":
         return "Continue";
       case "READY_FOR_DESIGN":
-        return "Send to Design";
+        return "Generate Design";
+      case "READY_TO_PUBLISH":
+        return "Ready to Publish";
+      case "POSTED":
       case "PUBLISHED":
-        return "POSTED";
+        return "Posted";
     }
   }
 
   switch (item.currentStatus) {
+    case ContentStatus.BLOCKED:
+      return "Blocked";
     case ContentStatus.WAITING_FOR_COPY:
-      return "Await Copy";
+      return "Blocked";
     case ContentStatus.READY_FOR_DESIGN:
-      return "Start Design";
+      return "Generate Design";
     case ContentStatus.IN_DESIGN:
-      return "Sync Design";
+      return "In Design";
     case ContentStatus.TRANSLATION_REQUESTED:
       return "Await Translation";
     case ContentStatus.TRANSLATION_READY:
@@ -1451,7 +1696,7 @@ export function getShortActionPhrase(item: QueueContentItem): string {
     case ContentStatus.READY_TO_POST:
       return "Post to LinkedIn";
     case ContentStatus.POSTED:
-      return "Complete";
+      return "Posted";
     case ContentStatus.IMPORTED:
     case ContentStatus.IN_REVIEW:
       return "Review";
@@ -1459,28 +1704,28 @@ export function getShortActionPhrase(item: QueueContentItem): string {
       if (item.queueMappingAvailability === "MISSING") {
         return "Missing Template";
       }
-      return "Start Design";
+      return "Generate Design";
     case ContentStatus.DESIGN_REQUESTED:
     case ContentStatus.DESIGN_IN_PROGRESS:
-      return "Sync Design";
+      return "In Design";
     case ContentStatus.DESIGN_READY:
       return "Approve Design";
     case ContentStatus.DESIGN_FAILED:
-      return "Retry Design";
+      return "Design Failed";
     case ContentStatus.CHANGES_REQUESTED:
-      return "Revise";
+      return "Changes Requested";
     case ContentStatus.DESIGN_APPROVED:
-      return item.translationRequired ? "Start Translation" : "Final Review";
+      return "Pending Approval";
     case ContentStatus.TRANSLATION_PENDING:
-      return "Check Translation";
+      return "Translation Pending";
     case ContentStatus.TRANSLATION_APPROVED:
       return "Final Review";
     case ContentStatus.READY_TO_PUBLISH:
     case ContentStatus.READY_TO_POST:
-      return "Post to LinkedIn";
+      return item.currentStatus === ContentStatus.READY_TO_PUBLISH ? "Ready to Publish" : "Post to LinkedIn";
     case ContentStatus.PUBLISHED_MANUALLY:
     case ContentStatus.POSTED:
-      return "Complete";
+      return "Posted";
     default:
       return "Review";
   }
@@ -1511,6 +1756,7 @@ export function getTranslationCheckpoint(item: QueueContentItem) {
   }
 
   if (
+    item.currentStatus === ContentStatus.IN_DESIGN ||
     item.currentStatus === ContentStatus.DESIGN_REQUESTED ||
     item.currentStatus === ContentStatus.DESIGN_IN_PROGRESS ||
     item.currentStatus === ContentStatus.DESIGN_FAILED ||
@@ -1520,4 +1766,99 @@ export function getTranslationCheckpoint(item: QueueContentItem) {
   }
 
   return "Translation approval pending";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Design eligibility view — operator-facing panel for the detail page
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Builds the operator-visible design eligibility view for the item detail page.
+ *
+ * Returns a rich object that UI components can render directly without
+ * re-deriving eligibility logic.
+ */
+export function buildDesignEligibilityView(item: ContentItemDetail): DesignEligibilityView {
+  const latestRequest = getLatestDesignRequest(item);
+  const latestAttemptNumber = latestRequest?.attemptNumber ?? 0;
+
+  if (isDesignRejection(item)) {
+    return {
+      status: "RETRY_AVAILABLE",
+      canTrigger: true,
+      canRetry: true,
+      headline: "Design changes requested",
+      summary: "The latest design was rejected. Review the feedback and retry the design.",
+      reasons: [
+        latestRequest?.errorMessage ?? "The latest design attempt was rejected by an operator.",
+      ],
+      outOfScopeReasons: [],
+      attemptsUsed: latestAttemptNumber,
+      attemptsAllowed: DESIGN_MAX_AUTO_RETRIES,
+      tone: "amber",
+    };
+  }
+
+  const result = getDesignEligibilityFromDetail(item);
+
+  const canTrigger = result.status === "ELIGIBLE";
+  const canRetry = result.status === "RETRY_AVAILABLE";
+
+  type ViewTone = DesignEligibilityView["tone"];
+
+  const TONE_MAP: Record<DesignEligibilityStatus, ViewTone> = {
+    ELIGIBLE: "sky",
+    IN_DESIGN: "amber",
+    DESIGN_READY: "emerald",
+    DESIGN_APPROVED: "emerald",
+    RETRY_AVAILABLE: "amber",
+    RETRY_EXHAUSTED: "rose",
+    OUT_OF_SCOPE: "slate",
+    MISSING_PREREQUISITES: "amber",
+    ACTIVE_REQUEST_EXISTS: "amber",
+    DOWNSTREAM_COMPLETE: "emerald",
+  };
+
+  const HEADLINE_MAP: Record<DesignEligibilityStatus, string> = {
+    ELIGIBLE: "Ready for design",
+    IN_DESIGN: "Design execution is active",
+    DESIGN_READY: "Design ready for approval",
+    DESIGN_APPROVED: "Design approved",
+    RETRY_AVAILABLE: "Design failed — retry available",
+    RETRY_EXHAUSTED: "Retry limit reached",
+    OUT_OF_SCOPE: "Outside current design scope",
+    MISSING_PREREQUISITES: "Design prerequisites not met",
+    ACTIVE_REQUEST_EXISTS: "Design request already in flight",
+    DOWNSTREAM_COMPLETE: "Design phase complete",
+  };
+
+  const SUMMARY_MAP: Record<DesignEligibilityStatus, string> = {
+    ELIGIBLE: "All prerequisites are met.  Design can be triggered now.",
+    IN_DESIGN: "A design request has been submitted and is awaiting resolution.",
+    DESIGN_READY: "The provider returned a result.  A human review decision is required.",
+    DESIGN_APPROVED: "The design has been reviewed and approved.",
+    RETRY_AVAILABLE: result.reasons[0] ?? "The last design attempt failed.",
+    RETRY_EXHAUSTED:
+      `All ${DESIGN_MAX_AUTO_RETRIES} allowed attempts have been exhausted. ` +
+      "Update the copy or title to unlock a new attempt set.",
+    OUT_OF_SCOPE:
+      "Design automation is not available for this item in the current phase.  " +
+      "See reasons below for details.",
+    MISSING_PREREQUISITES: "Required fields are absent.  Design cannot start until they are provided.",
+    ACTIVE_REQUEST_EXISTS: "An active design request is already being processed.",
+    DOWNSTREAM_COMPLETE: "This item has moved past the design phase.",
+  };
+
+  return {
+    status: result.status,
+    canTrigger,
+    canRetry,
+    headline: HEADLINE_MAP[result.status],
+    summary: SUMMARY_MAP[result.status],
+    reasons: result.reasons,
+    outOfScopeReasons: result.outOfScopeReasons,
+    attemptsUsed: latestAttemptNumber,
+    attemptsAllowed: DESIGN_MAX_AUTO_RETRIES,
+    tone: TONE_MAP[result.status],
+  };
 }

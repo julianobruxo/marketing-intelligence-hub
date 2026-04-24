@@ -17,6 +17,7 @@ import {
 import { requireSession } from "@/modules/auth/application/auth-service";
 import { importContentItem } from "@/modules/content-intake/application/import-content-item";
 import {
+  readGoogleSpreadsheetImport,
   readGoogleSpreadsheetWorkbook,
   type GoogleSheetsParsedRow,
   type GoogleSheetsRawSpreadsheetImport,
@@ -39,27 +40,25 @@ import {
   type AiSheetAnalysisResult,
   type AiSheetAnalysisRow,
 } from "./ai-sheet-analyzer";
-import { inferContentOperationalStatus } from "../domain/infer-content-status";
+import {
+  hasImageLink,
+  hasRealCopy,
+  inferContentRouting,
+} from "../domain/infer-content-status";
 import {
   contentIngestionPayloadSchema,
   type ContentIngestionPayload,
 } from "../domain/ingestion-contract";
 import {
   normalizeComparableText,
-  normalizeHeaderText,
   scoreComparableText,
-  normalizeBooleanish,
-  X_ACCOUNT_WORKSHEET_PATTERN,
   isXAccountWorksheet,
   buildWorksheetColumnMap,
   extractColumnarRowFields,
   isRowQueueCandidate as _isRowQueueCandidate,
   buildFallbackTitle,
   buildContentSignature as _buildContentSignature,
-  type WorksheetField,
-  type WorksheetColumnMap,
   type WorksheetExtractedFields,
-  WORKSHEET_FIELD_ALIASES,
   type AiSemanticFlags,
 } from "./__internal__/queue-helpers";
 
@@ -158,12 +157,65 @@ export type QueueSendResult = {
   state: DriveSpreadsheetState;
 };
 
+function sanitizeCellValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+
+  return String(value)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .slice(0, 10000)
+    .trim();
+}
+
+function sanitizeJsonLikeValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return sanitizeCellValue(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeJsonLikeValue(entry));
+  }
+
+  if (value && typeof value === "object") {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        sanitizeCellValue(key),
+        sanitizeJsonLikeValue(entry),
+      ]),
+    );
+  }
+
+  return value;
+}
+
+function safeJsonParse<T>(raw: string, fallback: T): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    logEvent("error", "[IMPORT] JSON parse failed", {
+      error: error instanceof Error ? error.message : String(error),
+      preview: raw.slice(0, 200),
+    });
+    return fallback;
+  }
+}
+
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  const serialized = JSON.stringify(sanitizeJsonLikeValue(value));
+  if (!serialized) {
+    return {} as Prisma.InputJsonValue;
+  }
+
+  return safeJsonParse<Prisma.InputJsonValue>(serialized, {} as Prisma.InputJsonValue);
 }
 
 function hashStablePayload(value: unknown) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return createHash("sha256").update(JSON.stringify(sanitizeJsonLikeValue(value))).digest("hex");
 }
 
 function toSpreadsheetState(status: DriveImportBatchStatus): DriveSpreadsheetState {
@@ -203,7 +255,6 @@ function buildContentSignature(row: GoogleSheetsParsedRow, sourceGroup: string) 
   return _buildContentSignature({
     sourceGroup,
     plannedDate: row.planningFields.plannedDate,
-    platformLabel: row.planningFields.platformLabel,
     title: row.titleDerivation.title,
     copyEnglish: row.planningFields.copyEnglish,
   });
@@ -228,12 +279,43 @@ function optionalTrimmed(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-// normalizeBooleanish imported from __internal__/queue-helpers
+function buildOperationalRawRow(input: {
+  plannedDate?: string;
+  campaignLabel?: string;
+  copyEnglish: string;
+  sourceAssetLink?: string;
+  contentDeadline?: string;
+  publishedFlag?: string | boolean;
+}) {
+  const rawRow: Record<string, string | boolean> = {
+    "LinkedIn Copy": input.copyEnglish,
+  };
 
-function buildAiReasoning(row: AiSheetAnalysisRow) {
-  return row.semantic.reasoning.length > 0
-    ? row.semantic.reasoning
-    : ["AI semantic extractor did not provide explicit reasoning."];
+  if (input.plannedDate?.trim()) {
+    rawRow.Date = input.plannedDate.trim();
+  }
+
+  if (input.campaignLabel?.trim()) {
+    rawRow.Title = input.campaignLabel.trim();
+  }
+
+  if (input.sourceAssetLink?.trim()) {
+    rawRow["IMG LINK"] = input.sourceAssetLink.trim();
+  }
+
+  if (input.contentDeadline?.trim()) {
+    rawRow["Content Deadline"] = input.contentDeadline.trim();
+  }
+
+  if (typeof input.publishedFlag === "string") {
+    if (input.publishedFlag.trim()) {
+      rawRow.Published = input.publishedFlag.trim();
+    }
+  } else if (typeof input.publishedFlag === "boolean") {
+    rawRow.Published = input.publishedFlag;
+  }
+
+  return rawRow;
 }
 
 function isAiRowQualified(row: AiSheetAnalysisRow) {
@@ -242,7 +324,6 @@ function isAiRowQualified(row: AiSheetAnalysisRow) {
   }
 
   return (
-    row.semantic.has_editorial_brief ||
     row.semantic.has_title ||
     row.semantic.has_final_copy ||
     row.semantic.is_published
@@ -258,7 +339,6 @@ function isRowQueueCandidate(
 ): boolean {
   const flags: AiSemanticFlags = {
     is_empty_or_unusable: aiRow.semantic.is_empty_or_unusable,
-    has_editorial_brief: aiRow.semantic.has_editorial_brief,
     has_title: aiRow.semantic.has_title,
     has_final_copy: aiRow.semantic.has_final_copy,
     is_published: aiRow.semantic.is_published,
@@ -271,60 +351,28 @@ function deriveAiRowConfidence(row: AiSheetAnalysisRow): "HIGH" | "MEDIUM" | "LO
     return "LOW";
   }
 
-  if (
-    row.semantic.has_final_copy &&
-    (row.semantic.has_title || row.semantic.has_editorial_brief)
-  ) {
+  if (row.semantic.has_final_copy && row.semantic.has_title) {
     return "HIGH";
   }
 
-  if (
-    row.semantic.has_final_copy ||
-    row.semantic.has_title ||
-    row.semantic.has_editorial_brief
-  ) {
+  if (row.semantic.has_final_copy || row.semantic.has_title || row.semantic.is_published) {
     return "MEDIUM";
   }
 
   return "LOW";
 }
 
-function extractSourceAssetLink(rowMap: Record<string, string>) {
-  for (const value of Object.values(rowMap)) {
-    if (!value || typeof value !== "string") {
-      continue;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      continue;
-    }
-
-    if (!/^https?:\/\//i.test(trimmed)) {
-      continue;
-    }
-
-    if (
-      /(png|jpg|jpeg|gif|webp|canva|figma|image|img|asset|drive\.google\.com)/i.test(
-        trimmed,
-      )
-    ) {
-      return trimmed;
-    }
-  }
-
-  return undefined;
-}
-
-function deriveOperationalStatusFromAiRow(input: {
+function deriveRoutingFromParsedFields(input: {
+  title?: string;
   copyEnglish: string;
-  contentDeadline?: string;
+  sourceAssetLink?: string;
   publishedFlag?: string | boolean;
 }) {
-  return inferContentOperationalStatus({
+  return inferContentRouting({
     planning: {
+      title: input.title,
       copyEnglish: input.copyEnglish,
-      contentDeadline: input.contentDeadline,
+      sourceAssetLink: input.sourceAssetLink,
     },
     sourceMetadata: {
       publishedFlag: input.publishedFlag,
@@ -335,7 +383,7 @@ function deriveOperationalStatusFromAiRow(input: {
 // buildFallbackTitle imported from __internal__/queue-helpers
 
 function padHeaders(headers: string[], rowValues: string[]) {
-  const nextHeaders = [...headers];
+  const nextHeaders = headers.map((header) => sanitizeCellValue(header));
   while (nextHeaders.length < rowValues.length) {
     nextHeaders.push(`Column ${nextHeaders.length + 1}`);
   }
@@ -344,7 +392,7 @@ function padHeaders(headers: string[], rowValues: string[]) {
 }
 
 function normalizeRowValues(headers: string[], rowValues: string[]) {
-  const nextRowValues = [...rowValues];
+  const nextRowValues = rowValues.map((value) => sanitizeCellValue(value));
   while (nextRowValues.length < headers.length) {
     nextRowValues.push("");
   }
@@ -354,21 +402,26 @@ function normalizeRowValues(headers: string[], rowValues: string[]) {
 
 function buildRowMap(headers: string[], rowValues: string[]) {
   return headers.reduce<Record<string, string>>((accumulator, header, index) => {
-    accumulator[header] = rowValues[index] ?? "";
+    accumulator[sanitizeCellValue(header)] = sanitizeCellValue(rowValues[index]);
     return accumulator;
   }, {});
+}
+
+function sanitizeWorksheetImport(worksheet: GoogleSheetsRawWorksheetImport): GoogleSheetsRawWorksheetImport {
+  return {
+    ...worksheet,
+    detectedHeaders: worksheet.detectedHeaders.map((header) => sanitizeCellValue(header)),
+    rows: worksheet.rows.map((row) => row.map((cell) => sanitizeCellValue(cell))),
+  };
 }
 
 function buildAiRowSearchText(row: AiSheetAnalysisResult["rows"][number]) {
   return normalizeComparableText(
     [
       row.data.date ?? "",
-      row.data.ideaOrBrief ?? "",
       row.data.title ?? "",
-      row.data.copy ?? "",
       row.data.deadline ?? "",
       row.data.published ?? "",
-      row.data.channel ?? "",
     ].join(" | "),
   );
 }
@@ -394,12 +447,6 @@ function scoreAiRowAgainstWorksheetRow(
     score += rowText.includes(normalizedTitle) ? 4 : scoreComparableText(title, rowText) * 4;
   }
 
-  const copy = optionalTrimmed(row.data.copy);
-  if (copy) {
-    const normalizedCopy = normalizeComparableText(copy);
-    score += rowText.includes(normalizedCopy) ? 3 : scoreComparableText(copy, rowText) * 3;
-  }
-
   const plannedDate = optionalTrimmed(row.data.date);
   if (plannedDate) {
     const normalizedDate = normalizeComparableText(plannedDate);
@@ -416,12 +463,6 @@ function scoreAiRowAgainstWorksheetRow(
   if (published) {
     const normalizedPublished = normalizeComparableText(published);
     score += rowText.includes(normalizedPublished) ? 1 : scoreComparableText(published, rowText);
-  }
-
-  const channel = optionalTrimmed(row.data.channel);
-  if (channel) {
-    const normalizedChannel = normalizeComparableText(channel);
-    score += rowText.includes(normalizedChannel) ? 1 : scoreComparableText(channel, rowText);
   }
 
   return score;
@@ -556,11 +597,11 @@ function resolveWorksheetHeaderContext(
 // Deterministic patterns that override AI semantic qualification for obvious non-data rows.
 // These are high-precision and safe to apply without context.
 const DETERMINISTIC_SKIP_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /^\s*week\s*\d+\s*(?:[-–—].*)?$/i, label: "week separator" },
-  { pattern: /^\s*semana\s*\d+\s*(?:[-–—].*)?$/i, label: "semana (PT week separator)" },
-  { pattern: /^\s*w\d{1,2}\s*(?:[-–—].*)?$/i, label: "week abbreviation separator" },
-  { pattern: /^\s*hashtags?\s*(?:[:：#].*)?$/i, label: "hashtag block header" },
-  { pattern: /^\s*qr\s*code\s*(?:link)?[:：]?\s*$/i, label: "QR code block" },
+  { pattern: /^\s*week\s*\d+\s*(?:[-â€“â€”].*)?$/i, label: "week separator" },
+  { pattern: /^\s*semana\s*\d+\s*(?:[-â€“â€”].*)?$/i, label: "semana (PT week separator)" },
+  { pattern: /^\s*w\d{1,2}\s*(?:[-â€“â€”].*)?$/i, label: "week abbreviation separator" },
+  { pattern: /^\s*hashtags?\s*(?:[:ï¼š#].*)?$/i, label: "hashtag block header" },
+  { pattern: /^\s*qr\s*code\s*(?:link)?[:ï¼š]?\s*$/i, label: "QR code block" },
 ];
 
 type PostAiFilterResult =
@@ -580,7 +621,7 @@ function postAiFilterRow(
   }
 
   // Deterministic skip patterns: checked against individual cells first,
-  // then against the concatenated text of sparse rows (≤2 non-empty cells)
+  // then against the concatenated text of sparse rows (â‰¤2 non-empty cells)
   const joinedSparse = nonEmptyCells.length <= 2 ? nonEmptyCells.join(" ").trim() : "";
   for (const { pattern, label } of DETERMINISTIC_SKIP_PATTERNS) {
     const matchedCell = trimmedCells.find((cell) => cell.length > 0 && pattern.test(cell));
@@ -593,19 +634,16 @@ function postAiFilterRow(
     }
   }
 
-  // Minimum content gate — only applied when AI semantic extraction marked the row as qualified.
+  // Minimum content gate â€” only applied when AI semantic extraction marked the row as qualified.
   // Goal: catch sparse/false-positive rows without losing real incomplete work items.
   if (isAiRowQualified(aiRow)) {
     const hasTitle = Boolean(aiRow.data.title?.trim());
-    const hasBrief = Boolean(aiRow.data.ideaOrBrief?.trim());
-    const hasCopy = Boolean(aiRow.data.copy?.trim());
     const hasPublishedSignal = Boolean(aiRow.data.published?.trim()) || aiRow.semantic.is_published;
     const hasDate = Boolean(aiRow.data.date?.trim());
     const hasDeadline = Boolean(aiRow.data.deadline?.trim());
-    const hasChannel = Boolean(aiRow.data.channel?.trim());
-    const hasSchedulingSignal = hasDate || hasDeadline || hasChannel;
+    const hasSchedulingSignal = hasDate || hasDeadline || hasPublishedSignal;
 
-    if (!hasTitle && !hasBrief && !hasCopy && !hasPublishedSignal && aiRow.semantic.needs_human_review) {
+    if (!hasTitle && !hasPublishedSignal && !hasSchedulingSignal && aiRow.semantic.needs_human_review) {
       return {
         allowed: false,
         reason: "AI flagged the row for human review without enough operational content signals.",
@@ -613,8 +651,8 @@ function postAiFilterRow(
       };
     }
 
-    // If AI extracted absolutely nothing across all six fields, something is wrong.
-    if (!hasTitle && !hasBrief && !hasCopy && !hasPublishedSignal && !hasSchedulingSignal) {
+    // If AI extracted absolutely nothing across the operational fields, something is wrong.
+    if (!hasTitle && !hasPublishedSignal && !hasSchedulingSignal) {
       return {
         allowed: false,
         reason: "AI marked as qualified but no recognizable content fields were extracted.",
@@ -641,71 +679,41 @@ function buildAiParsedRow(input: {
   const headers = padHeaders(headerContext.headers, sourceRow);
   const rowValues = normalizeRowValues(headers, sourceRow);
   const rowMap = buildRowMap(headers, rowValues);
-  const semanticReasoning = buildAiReasoning(row);
   const rowConfidence = deriveAiRowConfidence(row);
 
-  const sourceAssetLink = extractSourceAssetLink(rowMap);
-
-  // Phase 1 — deterministic extraction: use the worksheet column map (built once per
-  // worksheet) to read canonical field values directly from raw row cells.
-  // The sheet is the source of truth; AI is only consulted to fill gaps.
+  // The spreadsheet is the operational source of truth. AI may help find the row,
+  // but it must not promote brief-like planning fields into operational title/copy.
   const det = extractColumnarRowFields(headerContext.colMap, rowValues);
 
-  // Phase 1.5 — embedded multi-line cell fallback for old/transitional sheet formats.
-  // Old Yann format: a column with an empty header (or the "Copywriter Brief" column in
-  // transitional sheets) holds "{channel}\n\n{TITLE}\n\n{brief}".
-  // We check rowMap[""] first (truly old format), then det.brief (transitional format where
-  // the "Copywriter Brief" header is present but the Title column is still empty for some rows).
-  if (det.title === undefined) {
-    const multiLineSource = rowMap[""]?.trim() ?? det.brief?.trim();
-    if (multiLineSource) {
-      const paragraphs = multiLineSource.split("\n\n").map((p) => p.trim()).filter(Boolean);
-      // paragraphs[0] = channel label ("LinkedIn"), paragraphs[1] = title, paragraphs[2+] = brief
-      if (paragraphs.length >= 2 && paragraphs[1].length > 0 && paragraphs[1].length <= 120) {
-        det.title = paragraphs[1];
-        if (det.brief === undefined && paragraphs.length >= 3) {
-          det.brief = paragraphs.slice(2).join("\n\n").trim() || undefined;
-        }
-      }
-    }
-  }
-
-  // Phase 2 — AI fills gaps only where the deterministic layer found nothing.
-  const plannedDate = det.plannedDate ?? optionalTrimmed(row.data.date);
-  const rawIdeaOrBrief = det.brief ?? optionalTrimmed(row.data.ideaOrBrief);
-  const rawCampaignLabel = det.title ?? optionalTrimmed(row.data.title);
-  const copyEnglish = row.semantic.has_final_copy
-    ? (det.linkedinCopy ?? optionalTrimmed(row.data.copy) ?? "")
-    : (det.linkedinCopy ?? "");
-  const contentDeadline = det.contentDeadline ?? optionalTrimmed(row.data.deadline);
-  const platformLabel = det.platformLabel ?? optionalTrimmed(row.data.channel);
-  const publishedFlag = det.publishedFlag ?? optionalTrimmed(row.data.published);
-
-  // Phase 3 — title precedence: only apply the generic-topic-label heuristic when the
-  // title was AI-derived. A value read from a named title column is canonical and must not
-  // be reclassified as a topic label regardless of length.
-  const isDeterministicTitle = det.title !== undefined;
-  const isGenericTopicLabel =
-    !isDeterministicTitle &&
-    !!copyEnglish &&
-    !!rawCampaignLabel &&
-    rawCampaignLabel.length <= 40 &&
-    !/[.!?]$/.test(rawCampaignLabel);
-  const campaignLabel = isGenericTopicLabel ? undefined : rawCampaignLabel;
-  const ideaOrBrief = rawIdeaOrBrief ?? (isGenericTopicLabel ? rawCampaignLabel : undefined);
-
+  const plannedDate = det.plannedDate;
+  const campaignLabel = det.title?.trim() || undefined;
+  const copyEnglish = det.linkedinCopy ?? "";
+  const contentDeadline = det.contentDeadline;
+  const publishedFlag = det.publishedFlag;
+  const sourceAssetLink = det.sourceAssetLink;
+  const fallbackDate = plannedDate ?? contentDeadline;
+  const routingTitle = campaignLabel ?? (fallbackDate
+    ? buildFallbackTitle({ date: fallbackDate, rowNumber: rowIndex })
+    : undefined);
   const title = buildFallbackTitle({
-    title: campaignLabel,
-    copy: copyEnglish,
-    date: plannedDate,
+    title: routingTitle,
+    date: fallbackDate,
     rowNumber: rowIndex,
   });
-  const isPublishedRow = row.semantic.is_published || normalizeBooleanish(publishedFlag);
-  const operationalStatus = deriveOperationalStatusFromAiRow({
+  const routing = deriveRoutingFromParsedFields({
+    title: routingTitle,
     copyEnglish,
-    contentDeadline,
-    publishedFlag: isPublishedRow ? publishedFlag ?? true : publishedFlag,
+    sourceAssetLink,
+    publishedFlag,
   });
+  const operationalStatus = routing.operationalStatus;
+  const blockReason = routing.blockReason;
+  const isPublishedRow = operationalStatus === "POSTED";
+  const rowReasons: string[] = [];
+
+  if (blockReason) {
+    rowReasons.push(`Blocked: ${blockReason}.`);
+  }
 
   const parsedRow: GoogleSheetsParsedRow = {
     worksheetId: worksheet.worksheetId,
@@ -729,16 +737,14 @@ function buildAiParsedRow(input: {
     rowQualification: {
       disposition: "QUALIFIED",
       confidence: rowConfidence,
-      reasons: semanticReasoning,
+      reasons: rowReasons,
       signals: {
-        hasDate: Boolean(plannedDate),
-        hasTitle: row.semantic.has_title || Boolean(campaignLabel),
-        hasCopy: row.semantic.has_final_copy || copyEnglish.trim().length > 0,
-        hasPlatform: Boolean(platformLabel),
-        hasLink:
-          row.semantic.has_design_evidence ||
-          Object.values(rowMap).some((value) => value.includes("http://") || value.includes("https://")),
-        hasPublicationMarker: row.semantic.is_published || Boolean(publishedFlag),
+        hasDate: Boolean(plannedDate || contentDeadline),
+        hasTitle: Boolean(routingTitle),
+        hasCopy: hasRealCopy(copyEnglish),
+        hasPlatform: false,
+        hasLink: hasImageLink(sourceAssetLink),
+        hasPublicationMarker: isPublishedRow,
       },
       isPublishedRow,
     },
@@ -748,11 +754,11 @@ function buildAiParsedRow(input: {
           title,
           sourceField: "campaignLabel",
         }
-      : copyEnglish
+      : fallbackDate
         ? {
-            strategy: "PROFILE_FALLBACK_FIELD",
+            strategy: "HEURISTIC_LAST_RESORT",
             title,
-            sourceField: "copyEnglish",
+            sourceField: plannedDate ? "plannedDate" : "contentDeadline",
           }
         : {
             strategy: "HEURISTIC_LAST_RESORT",
@@ -760,24 +766,17 @@ function buildAiParsedRow(input: {
           },
     planningFields: {
       plannedDate,
-      platformLabel,
       campaignLabel,
-      ideaOrBrief,
       copyEnglish,
       sourceAssetLink,
       contentDeadline,
-      copyLanguageIsFallback: row.semantic.copy_language_is_fallback,
     },
     sourceMetadata: {
       publishedFlag,
-      extra: {
-        aiSemantic: row.semantic,
-        aiReasoning: semanticReasoning,
-        aiDerivedConfidence: rowConfidence,
-      },
     },
     contentProfile: inferContentProfileFromSourceGroup(sourceGroup),
     operationalStatus,
+    blockReason,
     translationRequired: false,
     autoPostEnabled: false,
     preferredDesignProvider: "MANUAL",
@@ -785,7 +784,6 @@ function buildAiParsedRow(input: {
       [
         sourceGroup,
         plannedDate ?? "",
-        platformLabel ?? "",
         title,
         copyEnglish,
       ].join(" | "),
@@ -795,13 +793,13 @@ function buildAiParsedRow(input: {
   return parsedRow;
 }
 
-async function resolveDriveSpreadsheetRecord(driveFileId: string) {
-  const cached = getDriveImportSpreadsheetById(driveFileId);
+async function resolveDriveSpreadsheetRecord(driveFileId: string, userId: string) {
+  const cached = getDriveImportSpreadsheetById(driveFileId, userId);
   if (cached) {
     return cached;
   }
 
-  const records = await listDriveImportSpreadsheets();
+  const records = await listDriveImportSpreadsheets({}, { userId });
   return records.find((record) => record.driveFileId === driveFileId) ?? null;
 }
 
@@ -817,6 +815,7 @@ async function findEquivalentContentItem(input: {
   const candidates = await prisma.contentItem.findMany({
     where: {
       profile,
+      deletedAt: null,
     },
     select: {
       id: true,
@@ -1018,7 +1017,10 @@ function buildNormalizedPayload(input: {
       rowId: row.rowId,
       rowNumber: row.rowNumber,
       rowVersion: row.rowVersion,
-      rawRow: row.rowMap,
+      rawRow: buildOperationalRawRow({
+        ...row.planningFields,
+        publishedFlag: row.sourceMetadata.publishedFlag,
+      }),
     },
     normalization: {
       sheetProfileKey: "drive-first-pipeline-1",
@@ -1046,6 +1048,7 @@ function buildNormalizedPayload(input: {
       equivalenceTargetContentItemId: existingContentItemId ?? undefined,
       conflictConfidence,
       operationalStatus: row.operationalStatus,
+      blockReason: row.blockReason,
     },
     content: {
       canonicalKey: [
@@ -1093,7 +1096,7 @@ function buildRowPersistenceData(input: {
     existingContentItemId,
     contentItemId: null,
     title: row.titleDerivation.title,
-    idea: row.planningFields.ideaOrBrief ?? row.planningFields.campaignLabel ?? null,
+    idea: null,
     copy: row.planningFields.copyEnglish,
     translationDraft: normalizedPayload?.content.translationCopy ?? null,
     plannedDate: row.planningFields.plannedDate ?? null,
@@ -1101,7 +1104,7 @@ function buildRowPersistenceData(input: {
       row.sourceMetadata.publishedFlag === undefined || row.sourceMetadata.publishedFlag === null
         ? null
         : String(row.sourceMetadata.publishedFlag),
-    publishedPostUrl: row.sourceMetadata.publishedPostUrl ?? null,
+    publishedPostUrl: null,
     sourceAssetLink: row.planningFields.sourceAssetLink ?? null,
     translationRequired: row.translationRequired,
     autoPostEnabled: row.autoPostEnabled,
@@ -1113,13 +1116,15 @@ function buildRowPersistenceData(input: {
       rowVersion: row.rowVersion,
       worksheetId: row.worksheetId,
       worksheetName: row.worksheetName,
-      headers: row.headers,
-      rowValues: row.rowValues,
-      rowMap: row.rowMap,
+      rawRow: buildOperationalRawRow({
+        ...row.planningFields,
+        publishedFlag: row.sourceMetadata.publishedFlag,
+      }),
       qualification: row.rowQualification,
       planningFields: row.planningFields,
       sourceMetadata: row.sourceMetadata,
       titleDerivation: row.titleDerivation,
+      blockReason: row.blockReason,
       contentSignature: row.contentSignature,
     },
     normalizedPayload: normalizedPayload ? toJsonValue(normalizedPayload) : null,
@@ -1132,7 +1137,155 @@ function buildRowPersistenceData(input: {
           ? "Conflict suggested by deterministic or equivalence matching."
           : row.rowQualification.disposition === "QUALIFIED"
             ? "Qualified for workflow queue import."
-            : "Row skipped during spreadsheet import."),
+      : "Row skipped during spreadsheet import."),
+  };
+}
+
+async function buildStagedRowRecord(input: {
+  prisma: ReturnType<typeof getPrisma>;
+  record: DriveSpreadsheetRecord;
+  spreadsheetImport: GoogleSheetsRawSpreadsheetImport;
+  row: GoogleSheetsParsedRow;
+  reimportStrategy: DriveReimportStrategy;
+  originalRowId?: string;
+}) {
+  const { prisma, record, spreadsheetImport, row, reimportStrategy, originalRowId } = input;
+
+  const lookupStartMs = Date.now();
+  const sourceRowIds = Array.from(
+    new Set([row.rowId, originalRowId].filter((value): value is string => Boolean(value))),
+  );
+
+  let exactSourceLink: { contentItemId: string } | null = null;
+  for (const sourceRowId of sourceRowIds) {
+    exactSourceLink = await prisma.contentSourceLink.findUnique({
+      where: {
+        upstreamSystem_spreadsheetId_worksheetId_rowId: {
+          upstreamSystem: "GOOGLE_SHEETS" as UpstreamSystem,
+          spreadsheetId: record.driveFileId,
+          worksheetId: row.worksheetId,
+          rowId: sourceRowId,
+        },
+      },
+      select: {
+        contentItemId: true,
+      },
+    });
+
+    if (exactSourceLink) {
+      break;
+    }
+  }
+
+  const equivalenceSuggestion =
+    exactSourceLink?.contentItemId === undefined
+      ? await findEquivalentContentItem({
+          prisma,
+          row,
+          sourceGroup: record.sourceContext.sourceGroup,
+          spreadsheetId: record.driveFileId,
+        })
+      : {
+          existingContentItemId: null,
+          confidence: DriveConflictConfidence.NO_MEANINGFUL_MATCH,
+          score: 0,
+          reasons: [],
+          matchType: "NONE" as const,
+        };
+
+  const existingContentItemId = exactSourceLink?.contentItemId ?? equivalenceSuggestion.existingContentItemId;
+  const conflictConfidence = exactSourceLink?.contentItemId
+    ? DriveConflictConfidence.HIGH_CONFIDENCE_DUPLICATE
+    : equivalenceSuggestion.confidence;
+  const conflictSuggestion =
+    existingContentItemId && conflictConfidence !== DriveConflictConfidence.NO_MEANINGFUL_MATCH
+      ? buildConflictSuggestion({
+          row,
+          spreadsheetId: record.driveFileId,
+          sourceGroup: record.sourceContext.sourceGroup,
+          existingContentItemId,
+          confidence: conflictConfidence,
+          score:
+            exactSourceLink?.contentItemId !== undefined
+              ? 1
+              : equivalenceSuggestion.score,
+          reasons:
+            exactSourceLink?.contentItemId !== undefined
+              ? [
+                  "The exact spreadsheet row already exists as a linked workflow item.",
+                ]
+              : equivalenceSuggestion.reasons,
+          matchType:
+            exactSourceLink?.contentItemId !== undefined
+              ? "SOURCE_LINK"
+              : equivalenceSuggestion.matchType,
+        })
+      : null;
+
+  const translationCopy = row.translationRequired
+    ? generateMockTranslationDraft({
+        sourceText: row.planningFields.copyEnglish,
+        sourceLocale: "en",
+        targetLocale: "pt-br",
+      })
+    : null;
+
+  const normalizedPayload = row.rowQualification.disposition === "QUALIFIED"
+    ? buildNormalizedPayload({
+        spreadsheetRecord: record,
+        spreadsheetImport,
+        row,
+        existingContentItemId,
+        conflictConfidence,
+        reimportStrategy,
+        translationCopy,
+      })
+    : null;
+
+  const persistenceData = buildRowPersistenceData({
+    row,
+    conflictConfidence,
+    conflictSuggestion,
+    existingContentItemId,
+    normalizedPayload,
+  });
+
+  return {
+    row: {
+      worksheetId: row.worksheetId,
+      worksheetName: row.worksheetName,
+      rowId: row.rowId,
+      rowNumber: row.rowNumber,
+      rowVersion: row.rowVersion,
+      rowKind: persistenceData.rowKind,
+      rowStatus: persistenceData.rowStatus,
+      conflictConfidence: persistenceData.conflictConfidence,
+      conflictAction: persistenceData.conflictAction,
+      existingContentItemId: persistenceData.existingContentItemId,
+      contentItemId: persistenceData.contentItemId,
+      title: persistenceData.title,
+      idea: persistenceData.idea,
+      copy: persistenceData.copy,
+      translationDraft: persistenceData.translationDraft,
+      plannedDate: persistenceData.plannedDate,
+      publishedFlag: persistenceData.publishedFlag,
+      publishedPostUrl: persistenceData.publishedPostUrl,
+      sourceAssetLink: persistenceData.sourceAssetLink,
+      translationRequired: persistenceData.translationRequired,
+      autoPostEnabled: persistenceData.autoPostEnabled,
+      preferredDesignProvider: persistenceData.preferredDesignProvider,
+      matchSignals: toJsonValue(persistenceData.matchSignals),
+      rowPayload: toJsonValue(persistenceData.rowPayload),
+      normalizedPayload: persistenceData.normalizedPayload ?? Prisma.JsonNull,
+      conflictSuggestion: persistenceData.conflictSuggestion ?? Prisma.JsonNull,
+      reason: persistenceData.reason,
+    } satisfies Omit<Prisma.SpreadsheetImportRowCreateManyInput, "batchId">,
+    isQualified: row.rowQualification.disposition === "QUALIFIED",
+    isPublished: row.rowQualification.isPublishedRow,
+    isConflict: persistenceData.rowStatus === DriveSpreadsheetRowState.CONFLICT,
+    isRejected: persistenceData.rowStatus === DriveSpreadsheetRowState.REJECTED,
+    isSkipped: persistenceData.rowStatus === DriveSpreadsheetRowState.SKIPPED,
+    lookupMs: Date.now() - lookupStartMs,
   };
 }
 
@@ -1169,14 +1322,18 @@ function buildSkippedRowTrace(input: {
     conflictAction: null,
     existingContentItemId: null,
     contentItemId: null,
-    title: det.title ?? det.brief?.slice(0, 120) ?? `row-${rowIndex}`,
-    idea: det.brief ?? null,
+    title: buildFallbackTitle({
+      title: det.title,
+      date: det.plannedDate ?? det.contentDeadline,
+      rowNumber: rowIndex,
+    }),
+    idea: null,
     copy: det.linkedinCopy ?? "",
     translationDraft: null,
     plannedDate: det.plannedDate ?? null,
     publishedFlag: det.publishedFlag ?? null,
-    publishedPostUrl: det.publishedPostUrl ?? null,
-    sourceAssetLink: null,
+    publishedPostUrl: null,
+    sourceAssetLink: det.sourceAssetLink ?? null,
     translationRequired: false,
     autoPostEnabled: false,
     preferredDesignProvider: null,
@@ -1184,8 +1341,8 @@ function buildSkippedRowTrace(input: {
       hasDate: Boolean(det.plannedDate),
       hasTitle: Boolean(det.title),
       hasCopy: Boolean(det.linkedinCopy),
-      hasPlatform: Boolean(det.platformLabel),
-      hasLink: Boolean(det.publishedPostUrl),
+      hasPlatform: false,
+      hasLink: Boolean(det.sourceAssetLink),
       hasPublicationMarker: Boolean(det.publishedFlag),
     },
     rowPayload: {
@@ -1194,7 +1351,14 @@ function buildSkippedRowTrace(input: {
       rowVersion: null,
       worksheetId: worksheet.worksheetId,
       worksheetName: worksheet.worksheetName,
-      rowValues: rowValues.slice(0, 20), // cap to avoid storing huge rows
+      rawRow: buildOperationalRawRow({
+        plannedDate: det.plannedDate,
+        campaignLabel: det.title,
+        copyEnglish: det.linkedinCopy ?? "",
+        sourceAssetLink: det.sourceAssetLink,
+        contentDeadline: det.contentDeadline,
+        publishedFlag: det.publishedFlag,
+      }),
       skipStage,
       detExtracted: det,
     },
@@ -1246,7 +1410,7 @@ async function stageDriveSpreadsheetToStaging(input: {
 }) {
   const { prisma, record, reimportStrategy, importedById } = input;
 
-  // ── TIMING: batch-level wall-clock start
+  // â”€â”€ TIMING: batch-level wall-clock start
   const batchStartMs = Date.now();
 
   const discoveryStartMs = Date.now();
@@ -1280,8 +1444,9 @@ async function stageDriveSpreadsheetToStaging(input: {
   let rejectedRowCount = 0;
   let skippedRowCount = 0;
   let validWorksheetCount = 0;
+  let deterministicFallbackUsed = false;
 
-  // ── TIMING: per-phase accumulators
+  // â”€â”€ TIMING: per-phase accumulators
   let totalAiMs = 0;          // sum of AI analysis time across all worksheets
   let totalDetMs = 0;         // sum of deterministic extraction time across all rows
   let totalNormMs = 0;        // sum of normalization time (buildAiParsedRow + buildNormalizedPayload)
@@ -1304,7 +1469,9 @@ async function stageDriveSpreadsheetToStaging(input: {
     worksheetCount: spreadsheetImport.worksheets.length,
   });
 
-  for (const worksheet of spreadsheetImport.worksheets) {
+  for (const rawWorksheet of spreadsheetImport.worksheets) {
+    const worksheet = sanitizeWorksheetImport(rawWorksheet);
+
     // Deterministic worksheet-level exclusion: skip X.com / Twitter workflow tabs entirely.
     // This runs before AI analysis so the AI is never consulted for X Account content.
     if (isXAccountWorksheet(worksheet.worksheetName)) {
@@ -1316,7 +1483,7 @@ async function stageDriveSpreadsheetToStaging(input: {
       continue;
     }
 
-    // ── TIMING: per-worksheet start
+    // â”€â”€ TIMING: per-worksheet start
     const worksheetStartMs = Date.now();
     let wsAiMs = 0;
     let wsHeaderMs = 0;
@@ -1361,10 +1528,9 @@ async function stageDriveSpreadsheetToStaging(input: {
 
     for (const aiRow of analysis.rows) {
       detectedRowCount += 1;
-      const aiReasoning = buildAiReasoning(aiRow);
       const rawRowAtReportedIndex = worksheet.rows[aiRow.rowIndex - 1] ?? [];
 
-      // ── TIMING: deterministic extraction
+      // â”€â”€ TIMING: deterministic extraction
       const detStartMs = Date.now();
       const det = extractColumnarRowFields(headerContext.colMap, rawRowAtReportedIndex);
       const rowDetMs = Date.now() - detStartMs;
@@ -1386,7 +1552,7 @@ async function stageDriveSpreadsheetToStaging(input: {
       if (!isRowQueueCandidate(aiRow, det)) {
         const skipReason = aiRow.semantic.is_empty_or_unusable
           ? "Row marked empty or unusable by AI and no deterministic content signals found."
-          : `Row did not pass queue candidate check. AI reasoning: ${aiReasoning.join(" | ") || "(none)"}`;
+          : "Row did not pass queue candidate check based on the operational spreadsheet fields.";
         logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] row:skip-not-queue-candidate", {
           spreadsheetId: record.spreadsheetId,
           worksheetId: worksheet.worksheetId,
@@ -1394,10 +1560,12 @@ async function stageDriveSpreadsheetToStaging(input: {
           rowIndex: aiRow.rowIndex,
           isEmptyOrUnusable: aiRow.semantic.is_empty_or_unusable,
           needsHumanReview: aiRow.semantic.needs_human_review,
-          detQualified: Boolean(det.plannedDate) && (Boolean(det.title) || Boolean(det.brief) || Boolean(det.linkedinCopy)),
+          detQualified:
+            (Boolean(det.plannedDate) || Boolean(det.contentDeadline)) &&
+            (Boolean(det.title) || Boolean(det.linkedinCopy) || Boolean(det.sourceAssetLink)),
           reason: skipReason,
         });
-        // ── OBSERVABILITY: persist a SKIPPED trace record so this row is queryable
+        // â”€â”€ OBSERVABILITY: persist a SKIPPED trace record so this row is queryable
         stagedRows.push(buildSkippedRowTrace({
           worksheet,
           rowIndex: aiRow.rowIndex,
@@ -1423,7 +1591,7 @@ async function stageDriveSpreadsheetToStaging(input: {
           semantic: aiRow.semantic,
           filterReason: filterResult.reason,
         });
-        // ── OBSERVABILITY: persist a SKIPPED trace record
+        // â”€â”€ OBSERVABILITY: persist a SKIPPED trace record
         stagedRows.push(buildSkippedRowTrace({
           worksheet,
           rowIndex: aiRow.rowIndex,
@@ -1453,9 +1621,9 @@ async function stageDriveSpreadsheetToStaging(input: {
           rowIndex: aiRow.rowIndex,
           semantic: aiRow.semantic,
           worksheetRowCount: worksheet.rows.length,
-          reason: aiReasoning.join(" | "),
+          reason: skipReason,
         });
-        // ── OBSERVABILITY: persist a SKIPPED trace record
+        // â”€â”€ OBSERVABILITY: persist a SKIPPED trace record
         stagedRows.push(buildSkippedRowTrace({
           worksheet,
           rowIndex: aiRow.rowIndex,
@@ -1477,13 +1645,13 @@ async function stageDriveSpreadsheetToStaging(input: {
           reportedRowIndex: aiRow.rowIndex,
           resolvedRowIndex: resolvedRow.rowNumber,
           score: resolvedRow.score,
-          reason: aiReasoning.join(" | "),
+          reason: "Operational field reconciliation selected a different worksheet row index.",
         });
       }
 
       usedWorksheetRowNumbers.add(resolvedRow.rowNumber);
 
-      // ── TIMING: normalization (buildAiParsedRow = Phase 1+2+3 field resolution)
+      // â”€â”€ TIMING: normalization (buildAiParsedRow = Phase 1+2+3 field resolution)
       const normStartMs = Date.now();
       const row = buildAiParsedRow({
         worksheet,
@@ -1503,162 +1671,41 @@ async function stageDriveSpreadsheetToStaging(input: {
         }),
       };
 
-      // ── TIMING: per-row source-link + equivalence lookup (DB reads inside loop)
-      const lookupStartMs = Date.now();
-      const exactSourceLink =
-        (await prisma.contentSourceLink.findUnique({
-          where: {
-            upstreamSystem_spreadsheetId_worksheetId_rowId: {
-              upstreamSystem: "GOOGLE_SHEETS" as UpstreamSystem,
-              spreadsheetId: record.driveFileId,
-              worksheetId: stagedRow.worksheetId,
-              rowId: stagedRow.rowId,
-            },
-          },
-          select: {
-            contentItemId: true,
-          },
-        })) ??
-        (await prisma.contentSourceLink.findUnique({
-          where: {
-            upstreamSystem_spreadsheetId_worksheetId_rowId: {
-              upstreamSystem: "GOOGLE_SHEETS" as UpstreamSystem,
-              spreadsheetId: record.driveFileId,
-              worksheetId: row.worksheetId,
-              rowId: row.rowId,
-            },
-          },
-          select: {
-            contentItemId: true,
-          },
-        }));
-
-      const equivalenceSuggestion =
-        exactSourceLink?.contentItemId === undefined
-          ? await findEquivalentContentItem({
-              prisma,
-              row: stagedRow,
-              sourceGroup: record.sourceContext.sourceGroup,
-              spreadsheetId: record.driveFileId,
-            })
-          : {
-              existingContentItemId: null,
-              confidence: DriveConflictConfidence.NO_MEANINGFUL_MATCH,
-              score: 0,
-              reasons: [],
-              matchType: "NONE" as const,
-            };
-      wsLookupMs += Date.now() - lookupStartMs;
-
-      const existingContentItemId = exactSourceLink?.contentItemId ?? equivalenceSuggestion.existingContentItemId;
-      const conflictConfidence = exactSourceLink?.contentItemId
-        ? DriveConflictConfidence.HIGH_CONFIDENCE_DUPLICATE
-        : equivalenceSuggestion.confidence;
-      const conflictSuggestion =
-        existingContentItemId && conflictConfidence !== DriveConflictConfidence.NO_MEANINGFUL_MATCH
-          ? buildConflictSuggestion({
-              row: stagedRow,
-              spreadsheetId: record.driveFileId,
-              sourceGroup: record.sourceContext.sourceGroup,
-              existingContentItemId,
-              confidence: conflictConfidence,
-              score:
-                exactSourceLink?.contentItemId !== undefined
-                  ? 1
-                  : equivalenceSuggestion.score,
-              reasons:
-                exactSourceLink?.contentItemId !== undefined
-                  ? [
-                      "The exact spreadsheet row already exists as a linked workflow item.",
-                    ]
-                  : equivalenceSuggestion.reasons,
-              matchType:
-                exactSourceLink?.contentItemId !== undefined
-                  ? "SOURCE_LINK"
-                  : equivalenceSuggestion.matchType,
-            })
-          : null;
-
-      const translationCopy = stagedRow.translationRequired
-        ? generateMockTranslationDraft({
-            sourceText: stagedRow.planningFields.copyEnglish,
-            sourceLocale: "en",
-            targetLocale: "pt-br",
-          })
-        : null;
-
-      const normalizedPayload = stagedRow.rowQualification.disposition === "QUALIFIED"
-        ? buildNormalizedPayload({
-            spreadsheetRecord: record,
-            spreadsheetImport,
-            row: stagedRow,
-            existingContentItemId,
-            conflictConfidence,
-            reimportStrategy,
-            translationCopy,
-          })
-        : null;
-
-      const persistenceData = buildRowPersistenceData({
+      // â”€â”€ TIMING: per-row source-link + equivalence lookup (DB reads inside loop)
+      const stagedRowRecord = await buildStagedRowRecord({
+        prisma,
+        record,
+        spreadsheetImport,
         row: stagedRow,
-        conflictConfidence,
-        conflictSuggestion,
-        existingContentItemId,
-        normalizedPayload,
+        reimportStrategy,
+        originalRowId: row.rowId,
       });
+      wsLookupMs += stagedRowRecord.lookupMs;
 
-      stagedRows.push({
-        worksheetId: row.worksheetId,
-        worksheetName: row.worksheetName,
-        rowId: row.rowId,
-        rowNumber: row.rowNumber,
-        rowVersion: row.rowVersion,
-        rowKind: persistenceData.rowKind,
-        rowStatus: persistenceData.rowStatus,
-        conflictConfidence: persistenceData.conflictConfidence,
-        conflictAction: persistenceData.conflictAction,
-        existingContentItemId: persistenceData.existingContentItemId,
-        contentItemId: persistenceData.contentItemId,
-        title: persistenceData.title,
-        idea: persistenceData.idea,
-        copy: persistenceData.copy,
-        translationDraft: persistenceData.translationDraft,
-        plannedDate: persistenceData.plannedDate,
-        publishedFlag: persistenceData.publishedFlag,
-        publishedPostUrl: persistenceData.publishedPostUrl,
-        sourceAssetLink: persistenceData.sourceAssetLink,
-        translationRequired: persistenceData.translationRequired,
-        autoPostEnabled: persistenceData.autoPostEnabled,
-        preferredDesignProvider: persistenceData.preferredDesignProvider,
-        matchSignals: toJsonValue(persistenceData.matchSignals),
-        rowPayload: toJsonValue(persistenceData.rowPayload),
-        normalizedPayload: persistenceData.normalizedPayload ?? Prisma.JsonNull,
-        conflictSuggestion: persistenceData.conflictSuggestion ?? Prisma.JsonNull,
-        reason: persistenceData.reason,
-      });
+      stagedRows.push(stagedRowRecord.row);
 
-      if (stagedRow.rowQualification.disposition === "QUALIFIED") {
+      if (stagedRowRecord.isQualified) {
         qualifiedRowCount += 1;
       }
 
-      if (stagedRow.rowQualification.isPublishedRow) {
+      if (stagedRowRecord.isPublished) {
         alreadyPublishedRowCount += 1;
       }
 
-      if (persistenceData.rowStatus === DriveSpreadsheetRowState.CONFLICT) {
+      if (stagedRowRecord.isConflict) {
         conflictCount += 1;
       }
 
-      if (persistenceData.rowStatus === DriveSpreadsheetRowState.REJECTED) {
+      if (stagedRowRecord.isRejected) {
         rejectedRowCount += 1;
       }
 
-      if (persistenceData.rowStatus === DriveSpreadsheetRowState.SKIPPED) {
+      if (stagedRowRecord.isSkipped) {
         skippedRowCount += 1;
       }
     }
 
-    // ── TIMING: worksheet totals
+    // â”€â”€ TIMING: worksheet totals
     totalDetMs += wsDetMs;
     totalNormMs += wsNormMs;
     totalNormalizationLookupMs += wsLookupMs;
@@ -1688,6 +1735,80 @@ async function stageDriveSpreadsheetToStaging(input: {
     });
   }
 
+  if (stagedRows.length === 0 && validWorksheetCount === 0 && detectedRowCount === 0) {
+    const deterministicImport = await readGoogleSpreadsheetImport({
+      spreadsheetId: record.driveFileId,
+      spreadsheetName: record.spreadsheetName,
+      sourceGroup: record.sourceContext.sourceGroup as DriveSpreadsheetRecord["sourceContext"]["sourceGroup"],
+      reimportStrategy,
+    });
+    const fallbackWorksheets = deterministicImport.worksheets.filter(
+      (worksheet) => !isXAccountWorksheet(worksheet.worksheetName),
+    );
+
+    if (fallbackWorksheets.length > 0) {
+      deterministicFallbackUsed = true;
+      validWorksheetCount = fallbackWorksheets.length;
+
+      logEvent("warn", "[TRACE_IMPORT_QUEUE][STAGE] fallback:deterministic-import", {
+        spreadsheetId: record.spreadsheetId,
+        spreadsheetName: record.spreadsheetName,
+        availableWorksheets: deterministicImport.availableWorksheets.length,
+        validWorksheetCount,
+        rowCount: fallbackWorksheets.reduce(
+          (total, worksheet) => total + worksheet.rows.length,
+          0,
+        ),
+      });
+
+      for (const worksheet of fallbackWorksheets) {
+        for (const parsedRow of worksheet.rows) {
+          detectedRowCount += 1;
+          const stagedRow = {
+            ...parsedRow,
+            rowId: buildDeterministicRowId({
+              spreadsheetId: record.driveFileId,
+              worksheetName: parsedRow.worksheetName,
+              rowNumber: parsedRow.rowNumber,
+            }),
+          };
+
+          const stagedRowRecord = await buildStagedRowRecord({
+            prisma,
+            record,
+            spreadsheetImport,
+            row: stagedRow,
+            reimportStrategy,
+            originalRowId: parsedRow.rowId,
+          });
+
+          totalNormalizationLookupMs += stagedRowRecord.lookupMs;
+          stagedRows.push(stagedRowRecord.row);
+
+          if (stagedRowRecord.isQualified) {
+            qualifiedRowCount += 1;
+          }
+
+          if (stagedRowRecord.isPublished) {
+            alreadyPublishedRowCount += 1;
+          }
+
+          if (stagedRowRecord.isConflict) {
+            conflictCount += 1;
+          }
+
+          if (stagedRowRecord.isRejected) {
+            rejectedRowCount += 1;
+          }
+
+          if (stagedRowRecord.isSkipped) {
+            skippedRowCount += 1;
+          }
+        }
+      }
+    }
+  }
+
   const dedupedRows = Array.from(
     stagedRows.reduce<Map<string, Omit<Prisma.SpreadsheetImportRowCreateManyInput, "batchId">>>((accumulator, row) => {
       if (!accumulator.has(row.rowId)) {
@@ -1706,6 +1827,7 @@ async function stageDriveSpreadsheetToStaging(input: {
     rowsRejected: rejectedRowCount,
     rowsSkipped: skippedRowCount,
     conflictRows: conflictCount,
+    deterministicFallbackUsed,
     duplicateRowsRemoved: stagedRows.length - dedupedRows.length,
   });
 
@@ -1716,7 +1838,7 @@ async function stageDriveSpreadsheetToStaging(input: {
         ? DriveImportBatchStatus.NEEDS_REIMPORT_DECISION
         : DriveImportBatchStatus.STAGED;
 
-  // ── TIMING: persistence (batch create + row createMany)
+  // â”€â”€ TIMING: persistence (batch create + row createMany)
   const persistenceStartMs = Date.now();
   const batch = await prisma.spreadsheetImportBatch.create({
     data: {
@@ -1745,6 +1867,7 @@ async function stageDriveSpreadsheetToStaging(input: {
         matchingSignals: record.matchingSignals,
         worksheetCount: spreadsheetImport.worksheets.length,
         validWorksheetCount,
+        deterministicFallbackUsed,
         pipelineKeyword: record.matchingSignals.includes("SMM Plan"),
       }),
       validWorksheetCount,
@@ -1787,7 +1910,8 @@ async function stageDriveSpreadsheetToStaging(input: {
     conflictRows: conflictCount,
     alreadyPublishedRowCount,
     rowsInserted: dedupedRows.length,
-    // ── TIMING: full breakdown attached to the terminal event for this batch
+    deterministicFallbackUsed,
+    // â”€â”€ TIMING: full breakdown attached to the terminal event for this batch
     timing: {
       batchTotalMs,
       discoveryMs,
@@ -1823,17 +1947,25 @@ async function stageDriveSpreadsheetToStaging(input: {
 }
 
 export async function scanDriveImportCatalogAction(input: DriveImportScanRequest = {}) {
-  await requireSession();
+  const session = await requireSession();
+  const prisma = getPrisma();
+  const actor = await prisma.user.findUnique({
+    where: { email: session.email },
+  });
+  const userId = actor?.id ?? session.email;
   logEvent("info", "[TRACE_IMPORT_QUEUE][SCAN] start", {
     query: input.query ?? "",
     sourceGroup: input.sourceGroup ?? "ALL",
     page: input.page ?? 1,
     pageSize: input.pageSize ?? null,
+    userId,
   });
-  const result = await scanDriveImportSpreadsheets(input);
+  const result = await scanDriveImportSpreadsheets(input, { userId });
   logEvent("info", "[TRACE_IMPORT_QUEUE][SCAN] result", {
     total: result.total,
     returnedSpreadsheetIds: result.results.map((entry) => entry.record.driveFileId),
+    source: result.source,
+    scannedAt: result.scannedAt.toISOString(),
   });
   return result;
 }
@@ -1844,16 +1976,18 @@ export async function stageDriveImportSpreadsheetsAction(input: DriveImportStage
   const actor = await prisma.user.findUnique({
     where: { email: session.email },
   });
+  const cacheUserId = actor?.id ?? session.email;
 
   const driveFileIds = Array.from(new Set(input.driveFileIds));
   logEvent("info", "[TRACE_IMPORT_QUEUE][STAGE] request", {
     driveFileIds,
     reimportStrategy: input.reimportStrategy ?? DriveReimportStrategy.UPDATE,
     actorEmail: session.email,
+    userId: cacheUserId,
   });
   const records = (
     await Promise.all(
-      driveFileIds.map(async (driveFileId) => resolveDriveSpreadsheetRecord(driveFileId)),
+      driveFileIds.map(async (driveFileId) => resolveDriveSpreadsheetRecord(driveFileId, cacheUserId)),
     )
   ).filter((record): record is DriveSpreadsheetRecord => Boolean(record));
 
@@ -1934,7 +2068,7 @@ export async function stageDriveImportSpreadsheetsAction(input: DriveImportStage
 }
 
 async function getResolvedRowDecision(
-  prisma: ReturnType<typeof getPrisma>,
+  prisma: unknown,
   row: Prisma.SpreadsheetImportRowGetPayload<{
     include: never;
   }>,
@@ -1952,6 +2086,67 @@ async function getResolvedRowDecision(
   }
 
   return DriveReimportStrategy.KEEP_AS_IS;
+}
+
+function buildQueueSendResultFromSpreadsheet(
+  spreadsheet: SpreadsheetImportBatch & { rows: SpreadsheetImportRow[] },
+): QueueSendResult {
+  const counts = spreadsheet.rows.reduce(
+    (accumulator, row) => {
+      switch (row.rowStatus) {
+        case DriveSpreadsheetRowState.QUEUED:
+          accumulator.createdRows += 1;
+          break;
+        case DriveSpreadsheetRowState.UPDATED:
+          accumulator.updatedRows += 1;
+          break;
+        case DriveSpreadsheetRowState.REPLACED:
+          accumulator.replacedRows += 1;
+          break;
+        case DriveSpreadsheetRowState.KEPT_AS_IS:
+          accumulator.keptRows += 1;
+          break;
+        case DriveSpreadsheetRowState.PUBLISHED_COMPLETE:
+          accumulator.publishedRows += 1;
+          break;
+        case DriveSpreadsheetRowState.SKIPPED:
+          accumulator.skippedRows += 1;
+          break;
+        case DriveSpreadsheetRowState.REJECTED:
+          accumulator.rejectedRows += 1;
+          break;
+        default:
+          break;
+      }
+
+      return accumulator;
+    },
+    {
+      createdRows: 0,
+      updatedRows: 0,
+      replacedRows: 0,
+      keptRows: 0,
+      publishedRows: 0,
+      skippedRows: 0,
+      rejectedRows: 0,
+    },
+  );
+
+  return {
+    spreadsheetId: spreadsheet.spreadsheetId,
+    spreadsheetImportId: spreadsheet.id,
+    sentRows:
+      counts.createdRows +
+      counts.updatedRows +
+      counts.replacedRows +
+      counts.keptRows +
+      counts.publishedRows,
+    ...counts,
+    conflicts: spreadsheet.conflictCount,
+    receiptIds: [],
+    contentItemIds: [],
+    state: toSpreadsheetState(spreadsheet.status as DriveImportBatchStatus),
+  };
 }
 
 export async function sendStagedSpreadsheetToWorkflowQueueAction(
@@ -1979,16 +2174,13 @@ export async function sendStagedSpreadsheetToWorkflowQueueAction(
     return null;
   }
 
-  const receiptIds: string[] = [];
-  const contentItemIds: string[] = [];
-  let createdRows = 0;
-  let updatedRows = 0;
-  let replacedRows = 0;
-  let keptRows = 0;
-  let publishedRows = 0;
-  let skippedRows = 0;
-  let rejectedRows = 0;
-  let conflicts = 0;
+  if (spreadsheet.status === DriveImportBatchStatus.SENT_TO_QUEUE) {
+    logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] already-completed", {
+      spreadsheetImportId: spreadsheet.id,
+      spreadsheetId: spreadsheet.spreadsheetId,
+    });
+    return buildQueueSendResultFromSpreadsheet(spreadsheet);
+  }
 
   logEvent("info", "Sending staged spreadsheet to workflow queue", {
     spreadsheetImportId,
@@ -2003,257 +2195,290 @@ export async function sendStagedSpreadsheetToWorkflowQueueAction(
     stagedRows: spreadsheet.rows.length,
   });
 
-  for (const row of spreadsheet.rows) {
-    if (row.rowStatus === DriveSpreadsheetRowState.SKIPPED) {
-      skippedRows += 1;
-      logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:skip", {
-        spreadsheetImportId: spreadsheet.id,
-        rowId: row.rowId,
-        rowStatus: row.rowStatus,
-      });
-      continue;
-    }
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const receiptIds: string[] = [];
+      const contentItemIds: string[] = [];
+      let createdRows = 0;
+      let updatedRows = 0;
+      let replacedRows = 0;
+      let keptRows = 0;
+      let publishedRows = 0;
+      let skippedRows = 0;
+      let rejectedRows = 0;
+      let conflicts = 0;
 
-    if (row.rowStatus === DriveSpreadsheetRowState.REJECTED) {
-      rejectedRows += 1;
-      logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:reject", {
-        spreadsheetImportId: spreadsheet.id,
-        rowId: row.rowId,
-        rowStatus: row.rowStatus,
-      });
-      continue;
-    }
-
-    const decision = await getResolvedRowDecision(prisma, row);
-    logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:start", {
-      spreadsheetImportId: spreadsheet.id,
-      rowId: row.rowId,
-      rowStatus: row.rowStatus,
-      existingContentItemId: row.existingContentItemId,
-      conflictConfidence: row.conflictConfidence,
-      resolvedDecision: decision,
-      hasNormalizedPayload: Boolean(row.normalizedPayload),
-    });
-
-    if (
-      decision === DriveReimportStrategy.KEEP_AS_IS &&
-      row.existingContentItemId &&
-      row.rowStatus !== DriveSpreadsheetRowState.PUBLISHED_COMPLETE
-    ) {
-      keptRows += 1;
-      logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:kept-existing", {
-        spreadsheetImportId: spreadsheet.id,
-        rowId: row.rowId,
-        existingContentItemId: row.existingContentItemId,
-        reason: "decision_keep_as_is",
-      });
-
-      await prisma.spreadsheetImportRow.update({
-        where: {
-          batchId_rowId: {
-            batchId: spreadsheet.id,
+      for (const row of spreadsheet.rows) {
+        if (row.rowStatus === DriveSpreadsheetRowState.SKIPPED) {
+          skippedRows += 1;
+          logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:skip", {
+            spreadsheetImportId: spreadsheet.id,
             rowId: row.rowId,
+            rowStatus: row.rowStatus,
+          });
+          continue;
+        }
+
+        if (row.rowStatus === DriveSpreadsheetRowState.REJECTED) {
+          rejectedRows += 1;
+          logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:reject", {
+            spreadsheetImportId: spreadsheet.id,
+            rowId: row.rowId,
+            rowStatus: row.rowStatus,
+          });
+          continue;
+        }
+
+        const decision = await getResolvedRowDecision(tx, row);
+        logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:start", {
+          spreadsheetImportId: spreadsheet.id,
+          rowId: row.rowId,
+          rowStatus: row.rowStatus,
+          existingContentItemId: row.existingContentItemId,
+          conflictConfidence: row.conflictConfidence,
+          resolvedDecision: decision,
+          hasNormalizedPayload: Boolean(row.normalizedPayload),
+        });
+
+        if (
+          decision === DriveReimportStrategy.KEEP_AS_IS &&
+          row.existingContentItemId &&
+          row.rowStatus !== DriveSpreadsheetRowState.PUBLISHED_COMPLETE
+        ) {
+          keptRows += 1;
+          logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:kept-existing", {
+            spreadsheetImportId: spreadsheet.id,
+            rowId: row.rowId,
+            existingContentItemId: row.existingContentItemId,
+            reason: "decision_keep_as_is",
+          });
+
+          await tx.spreadsheetImportRow.update({
+            where: {
+              batchId_rowId: {
+                batchId: spreadsheet.id,
+                rowId: row.rowId,
+              },
+            },
+            data: {
+              rowStatus: DriveSpreadsheetRowState.KEPT_AS_IS,
+              contentItemId: row.existingContentItemId,
+              conflictAction: decision,
+              reason: "Existing workflow item preserved during queue send.",
+            },
+          });
+
+          continue;
+        }
+
+        const normalizedPayload = row.normalizedPayload as Record<string, unknown>;
+        const workflow = (normalizedPayload.workflow as Record<string, unknown> | undefined) ?? {};
+        const content = (normalizedPayload.content as Record<string, unknown> | undefined) ?? {};
+        const source = (normalizedPayload.source as Record<string, unknown> | undefined) ?? {};
+        const sourceMetadata = (normalizedPayload.sourceMetadata as Record<string, unknown> | undefined) ?? {};
+        const translationRequired = Boolean(workflow.translationRequired ?? content.translationRequired);
+        const translationCopy =
+          typeof content.translationCopy === "string"
+            ? content.translationCopy
+            : translationRequired
+              ? generateMockTranslationDraft({
+                  sourceText: String(content.copy ?? ""),
+                  sourceLocale: String(content.locale ?? "en"),
+                  targetLocale: "pt-br",
+                })
+              : null;
+
+        const finalPayload = {
+          ...normalizedPayload,
+          workflow: {
+            ...workflow,
+            translationRequired,
+            reimportStrategy:
+              row.rowStatus === DriveSpreadsheetRowState.PUBLISHED_COMPLETE
+                ? DriveReimportStrategy.REPLACE
+                : decision,
+            equivalenceTargetContentItemId: row.existingContentItemId ?? undefined,
+            conflictConfidence: row.conflictConfidence,
           },
-        },
+          content: {
+            ...content,
+            translationRequired,
+            translationCopy: translationCopy ?? undefined,
+          },
+          sourceMetadata,
+          source,
+        };
+
+        if (
+          decision !== DriveReimportStrategy.KEEP_AS_IS &&
+          row.existingContentItemId &&
+          row.conflictConfidence !== DriveConflictConfidence.NO_MEANINGFUL_MATCH
+        ) {
+          conflicts += 1;
+        }
+
+        const result = await importContentItem(finalPayload, { prisma: tx });
+        const contentItemId =
+          "contentItemId" in result && typeof result.contentItemId === "string"
+            ? result.contentItemId
+            : null;
+
+        if (contentItemId) {
+          contentItemIds.push(contentItemId);
+        }
+
+        if ("receiptId" in result && typeof result.receiptId === "string") {
+          receiptIds.push(result.receiptId);
+        }
+
+        const nextRowState =
+          row.rowStatus === DriveSpreadsheetRowState.PUBLISHED_COMPLETE
+            ? DriveSpreadsheetRowState.PUBLISHED_COMPLETE
+            : result.duplicate
+              ? DriveSpreadsheetRowState.DUPLICATE
+              : row.existingContentItemId && decision === DriveReimportStrategy.REPLACE
+                ? DriveSpreadsheetRowState.REPLACED
+                : row.existingContentItemId && decision === DriveReimportStrategy.UPDATE
+                  ? DriveSpreadsheetRowState.UPDATED
+                  : row.existingContentItemId
+                    ? DriveSpreadsheetRowState.KEPT_AS_IS
+                    : DriveSpreadsheetRowState.QUEUED;
+
+        if (nextRowState === DriveSpreadsheetRowState.QUEUED) {
+          createdRows += 1;
+        } else if (nextRowState === DriveSpreadsheetRowState.UPDATED) {
+          updatedRows += 1;
+        } else if (nextRowState === DriveSpreadsheetRowState.REPLACED) {
+          replacedRows += 1;
+        } else if (nextRowState === DriveSpreadsheetRowState.KEPT_AS_IS) {
+          keptRows += 1;
+        } else if (nextRowState === DriveSpreadsheetRowState.PUBLISHED_COMPLETE) {
+          publishedRows += 1;
+        }
+
+        await tx.spreadsheetImportRow.update({
+          where: {
+            batchId_rowId: {
+              batchId: spreadsheet.id,
+              rowId: row.rowId,
+            },
+          },
+          data: {
+            rowStatus: nextRowState,
+            contentItemId,
+            conflictAction: decision,
+            existingContentItemId: row.existingContentItemId,
+            reason:
+              row.reason ??
+              (nextRowState === DriveSpreadsheetRowState.QUEUED
+                ? "Queued into the workflow items table."
+                : nextRowState === DriveSpreadsheetRowState.UPDATED
+                  ? "Updated an existing workflow item."
+                  : nextRowState === DriveSpreadsheetRowState.REPLACED
+                    ? "Replaced the existing workflow item content."
+                    : nextRowState === DriveSpreadsheetRowState.PUBLISHED_COMPLETE
+                      ? "Imported as already published."
+                      : "Kept as-is during queue send."),
+            normalizedPayload: toJsonValue(finalPayload),
+          },
+        });
+
+        logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:done", {
+          spreadsheetImportId: spreadsheet.id,
+          rowId: row.rowId,
+          nextRowState,
+          contentItemId,
+          duplicate: result.duplicate,
+          receiptId: "receiptId" in result ? result.receiptId : null,
+        });
+      }
+
+      const nextState =
+        conflicts > 0
+          ? DriveImportBatchStatus.NEEDS_REIMPORT_DECISION
+          : updatedRows > 0 || replacedRows > 0
+            ? DriveImportBatchStatus.PARTIALLY_SENT
+            : DriveImportBatchStatus.SENT_TO_QUEUE;
+
+      await tx.spreadsheetImportBatch.update({
+        where: { id: spreadsheet.id },
         data: {
-          rowStatus: DriveSpreadsheetRowState.KEPT_AS_IS,
-          contentItemId: row.existingContentItemId,
-          conflictAction: decision,
-          reason: "Existing workflow item preserved during queue send.",
+          status: nextState,
+          queuedAt: new Date(),
+          importedById: spreadsheet.importedById ?? actor?.id ?? null,
+          updatedRowCount: updatedRows,
+          replacedRowCount: replacedRows,
+          keptRowCount: keptRows,
+          importedRowCount: createdRows + updatedRows + replacedRows + keptRows + publishedRows,
+          conflictCount: Math.max(spreadsheet.conflictCount, conflicts),
         },
       });
 
-      continue;
-    }
-
-    const normalizedPayload = row.normalizedPayload as Record<string, unknown>;
-    const workflow = (normalizedPayload.workflow as Record<string, unknown> | undefined) ?? {};
-    const content = (normalizedPayload.content as Record<string, unknown> | undefined) ?? {};
-    const source = (normalizedPayload.source as Record<string, unknown> | undefined) ?? {};
-    const sourceMetadata = (normalizedPayload.sourceMetadata as Record<string, unknown> | undefined) ?? {};
-    const translationRequired = Boolean(workflow.translationRequired ?? content.translationRequired);
-    const translationCopy =
-      typeof content.translationCopy === "string"
-        ? content.translationCopy
-        : translationRequired
-          ? generateMockTranslationDraft({
-              sourceText: String(content.copy ?? ""),
-              sourceLocale: String(content.locale ?? "en"),
-              targetLocale: "pt-br",
-            })
-          : null;
-
-    const finalPayload = {
-      ...normalizedPayload,
-      workflow: {
-        ...workflow,
-        translationRequired,
-        reimportStrategy:
-          row.rowStatus === DriveSpreadsheetRowState.PUBLISHED_COMPLETE
-            ? DriveReimportStrategy.REPLACE
-            : decision,
-        equivalenceTargetContentItemId: row.existingContentItemId ?? undefined,
-        conflictConfidence: row.conflictConfidence,
-      },
-      content: {
-        ...content,
-        translationRequired,
-        translationCopy: translationCopy ?? undefined,
-      },
-      sourceMetadata,
-      source,
-    };
-
-    if (
-      decision !== DriveReimportStrategy.KEEP_AS_IS &&
-      row.existingContentItemId &&
-      row.conflictConfidence !== DriveConflictConfidence.NO_MEANINGFUL_MATCH
-    ) {
-      conflicts += 1;
-    }
-
-    const result = await importContentItem(finalPayload);
-    const contentItemId =
-      "contentItemId" in result && typeof result.contentItemId === "string"
-        ? result.contentItemId
-        : null;
-
-    if (contentItemId) {
-      contentItemIds.push(contentItemId);
-    }
-
-    if ("receiptId" in result && typeof result.receiptId === "string") {
-      receiptIds.push(result.receiptId);
-    }
-
-    const nextRowState =
-      row.rowStatus === DriveSpreadsheetRowState.PUBLISHED_COMPLETE
-        ? DriveSpreadsheetRowState.PUBLISHED_COMPLETE
-        : result.duplicate
-          ? DriveSpreadsheetRowState.DUPLICATE
-          : row.existingContentItemId && decision === DriveReimportStrategy.REPLACE
-            ? DriveSpreadsheetRowState.REPLACED
-            : row.existingContentItemId && decision === DriveReimportStrategy.UPDATE
-              ? DriveSpreadsheetRowState.UPDATED
-              : row.existingContentItemId
-                ? DriveSpreadsheetRowState.KEPT_AS_IS
-                : DriveSpreadsheetRowState.QUEUED;
-
-    if (nextRowState === DriveSpreadsheetRowState.QUEUED) {
-      createdRows += 1;
-    } else if (nextRowState === DriveSpreadsheetRowState.UPDATED) {
-      updatedRows += 1;
-    } else if (nextRowState === DriveSpreadsheetRowState.REPLACED) {
-      replacedRows += 1;
-    } else if (nextRowState === DriveSpreadsheetRowState.KEPT_AS_IS) {
-      keptRows += 1;
-    } else if (nextRowState === DriveSpreadsheetRowState.PUBLISHED_COMPLETE) {
-      publishedRows += 1;
-    }
-
-    await prisma.spreadsheetImportRow.update({
-      where: {
-        batchId_rowId: {
-          batchId: spreadsheet.id,
-          rowId: row.rowId,
-        },
-      },
-      data: {
-        rowStatus: nextRowState,
-        contentItemId,
-        conflictAction: decision,
-        existingContentItemId: row.existingContentItemId,
-        reason:
-          row.reason ??
-          (nextRowState === DriveSpreadsheetRowState.QUEUED
-            ? "Queued into the workflow items table."
-            : nextRowState === DriveSpreadsheetRowState.UPDATED
-              ? "Updated an existing workflow item."
-              : nextRowState === DriveSpreadsheetRowState.REPLACED
-                ? "Replaced the existing workflow item content."
-                : nextRowState === DriveSpreadsheetRowState.PUBLISHED_COMPLETE
-                  ? "Imported as already published."
-                  : "Kept as-is during queue send."),
-        normalizedPayload: toJsonValue(finalPayload),
-      },
+      return {
+        spreadsheetId: spreadsheet.spreadsheetId,
+        spreadsheetImportId: spreadsheet.id,
+        sentRows: createdRows + updatedRows + replacedRows + keptRows + publishedRows,
+        createdRows,
+        updatedRows,
+        replacedRows,
+        keptRows,
+        publishedRows,
+        skippedRows,
+        rejectedRows,
+        conflicts,
+        receiptIds,
+        contentItemIds,
+        state: nextState,
+      } satisfies QueueSendResult;
     });
 
-    logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] row:done", {
+    revalidatePath("/queue");
+    revalidatePath("/import");
+
+    logEvent("info", "Finished sending staged spreadsheet to workflow queue", {
       spreadsheetImportId: spreadsheet.id,
-      rowId: row.rowId,
-      nextRowState,
-      contentItemId,
-      duplicate: result.duplicate,
-      receiptId: "receiptId" in result ? result.receiptId : null,
+      spreadsheetId: spreadsheet.spreadsheetId,
+      rowsInserted: result.sentRows,
+      itemsCreatedInQueue: result.createdRows,
+      itemsUpdatedInQueue: result.updatedRows,
+      skippedRows: result.skippedRows,
+      rejectedRows: result.rejectedRows,
+      conflicts: result.conflicts,
     });
+    logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] summary", {
+      spreadsheetImportId: spreadsheet.id,
+      spreadsheetId: spreadsheet.spreadsheetId,
+      nextState: result.state,
+      createdRows: result.createdRows,
+      updatedRows: result.updatedRows,
+      replacedRows: result.replacedRows,
+      keptRows: result.keptRows,
+      publishedRows: result.publishedRows,
+      skippedRows: result.skippedRows,
+      rejectedRows: result.rejectedRows,
+      conflicts: result.conflicts,
+      contentItemIds: result.contentItemIds,
+      receiptIds: result.receiptIds,
+    });
+
+    return result;
+  } catch (error) {
+    await prisma.spreadsheetImportBatch.update({
+      where: { id: spreadsheet.id },
+      data: {
+        status: DriveImportBatchStatus.FAILED,
+        importedById: spreadsheet.importedById ?? actor?.id ?? null,
+      },
+    });
+
+    logEvent("error", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] failed", {
+      spreadsheetImportId: spreadsheet.id,
+      spreadsheetId: spreadsheet.spreadsheetId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    throw error;
   }
-
-  const nextState =
-    conflicts > 0
-      ? DriveImportBatchStatus.NEEDS_REIMPORT_DECISION
-      : updatedRows > 0 || replacedRows > 0
-        ? DriveImportBatchStatus.PARTIALLY_SENT
-        : DriveImportBatchStatus.SENT_TO_QUEUE;
-
-  await prisma.spreadsheetImportBatch.update({
-    where: { id: spreadsheet.id },
-    data: {
-      status: nextState,
-      queuedAt: new Date(),
-      importedById: spreadsheet.importedById ?? actor?.id ?? null,
-      updatedRowCount: updatedRows,
-      replacedRowCount: replacedRows,
-      keptRowCount: keptRows,
-      importedRowCount: createdRows + updatedRows + replacedRows + keptRows + publishedRows,
-      conflictCount: Math.max(spreadsheet.conflictCount, conflicts),
-    },
-  });
-
-  revalidatePath("/queue");
-  revalidatePath("/import");
-
-  logEvent("info", "Finished sending staged spreadsheet to workflow queue", {
-    spreadsheetImportId: spreadsheet.id,
-    spreadsheetId: spreadsheet.spreadsheetId,
-    rowsInserted: createdRows + updatedRows + replacedRows + keptRows + publishedRows,
-    itemsCreatedInQueue: createdRows,
-    itemsUpdatedInQueue: updatedRows,
-    skippedRows,
-    rejectedRows,
-    conflicts,
-  });
-  logEvent("info", "[TRACE_IMPORT_QUEUE][QUEUE_SEND] summary", {
-    spreadsheetImportId: spreadsheet.id,
-    spreadsheetId: spreadsheet.spreadsheetId,
-    nextState,
-    createdRows,
-    updatedRows,
-    replacedRows,
-    keptRows,
-    publishedRows,
-    skippedRows,
-    rejectedRows,
-    conflicts,
-    contentItemIds,
-    receiptIds,
-  });
-
-  return {
-    spreadsheetId: spreadsheet.spreadsheetId,
-    spreadsheetImportId: spreadsheet.id,
-    sentRows: createdRows + updatedRows + replacedRows + keptRows + publishedRows,
-    createdRows,
-    updatedRows,
-    replacedRows,
-    keptRows,
-    publishedRows,
-    skippedRows,
-    rejectedRows,
-    conflicts,
-    receiptIds,
-    contentItemIds,
-    state: nextState,
-  } satisfies QueueSendResult;
 }
 
 export async function sendSelectedStagedSpreadsheetsToWorkflowQueueAction(input: {
@@ -2320,14 +2545,28 @@ export async function listDriveImportBatchesAction() {
 }
 
 export async function listDriveImportSpreadsheetsAction(input: DriveImportScanRequest = {}) {
-  await requireSession();
-  return await listDriveImportSpreadsheets(input);
+  const session = await requireSession();
+  const prisma = getPrisma();
+  const actor = await prisma.user.findUnique({
+    where: { email: session.email },
+  });
+  const userId = actor?.id ?? session.email;
+
+  return await listDriveImportSpreadsheets(input, { userId });
 }
 
 export async function getDriveImportSummaryAction() {
-  await requireSession();
+  const session = await requireSession();
+  const prisma = getPrisma();
+  const actor = await prisma.user.findUnique({
+    where: { email: session.email },
+  });
+  const userId = actor?.id ?? session.email;
+  const records = await listDriveImportSpreadsheets({}, { userId });
   return {
-    spreadsheetCount: getDriveImportSpreadsheetCount(),
+    spreadsheetCount: getDriveImportSpreadsheetCount(userId),
     sourceGroups: getDriveImportSourceGroups(),
+    source: records.source,
+    scannedAt: records.scannedAt,
   };
 }

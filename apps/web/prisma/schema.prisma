@@ -104,6 +104,7 @@ enum ContentStatus {
   DESIGN_APPROVED
   TRANSLATION_APPROVED
   // ── New intake ─────────────────────────────────────────────────────────
+  BLOCKED
   WAITING_FOR_COPY
   READY_FOR_DESIGN
   // ── New design ─────────────────────────────────────────────────────────
@@ -138,6 +139,7 @@ enum ApprovalDecision {
 
 enum DesignProvider {
   CANVA
+  GPT_IMAGE
   AI_VISUAL
   MANUAL
 }
@@ -149,6 +151,7 @@ enum DesignRequestStatus {
   APPROVED
   COMPLETED
   FAILED
+  REJECTED
 }
 
 enum AssetType {
@@ -198,18 +201,23 @@ model User {
 }
 
 model GoogleConnection {
-  id            String   @id @default(cuid())
-  userId        String   @unique
-  googleSub     String   @unique
-  googleEmail   String
-  accessToken   String   @db.Text
-  refreshToken  String?  @db.Text
-  scope         String?  @db.Text
-  expiresAt     DateTime?
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  googleSub            String   @unique
+  googleEmail          String
+  /// Deprecated: use accessTokenEncrypted.
+  accessToken          String   @db.Text
+  accessTokenEncrypted String?  @db.Text
+  /// Deprecated: use refreshTokenEncrypted.
+  refreshToken         String?  @db.Text
+  refreshTokenEncrypted String?  @db.Text
+  encryptionVersion    Int      @default(1)
+  scope                String?  @db.Text
+  expiresAt            DateTime?
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([googleEmail])
   @@index([active])
@@ -243,6 +251,7 @@ model ContentItem {
   currentStatus       ContentStatus     @default(IMPORTED)
   planningSnapshot    Json
   latestImportAt      DateTime?
+  deletedAt           DateTime?
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   sourceLinks         ContentSourceLink[]
@@ -305,6 +314,7 @@ model WorkflowNote {
   authorId      String
   type          NoteType
   body          String      @db.Text
+  deletedAt     DateTime?
   createdAt     DateTime    @default(now())
   contentItem   ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
   author        User        @relation(fields: [authorId], references: [id], onDelete: Restrict)
@@ -317,6 +327,7 @@ model ApprovalRecord {
   stage         ApprovalStage
   decision      ApprovalDecision
   note          String?          @db.Text
+  deletedAt     DateTime?
   createdAt     DateTime         @default(now())
   contentItem   ContentItem      @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
   actor         User             @relation(fields: [actorId], references: [id], onDelete: Restrict)
@@ -329,6 +340,7 @@ model StatusEvent {
   toStatus      ContentStatus
   actorEmail    String?
   note          String?       @db.Text
+  deletedAt     DateTime?
   createdAt     DateTime      @default(now())
   contentItem   ContentItem   @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
 }
@@ -362,6 +374,7 @@ model DesignRequest {
   errorMessage      String?
   requestPayload    Json?
   resultPayload     Json?
+  deletedAt         DateTime?
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
   contentItem       ContentItem            @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
@@ -382,6 +395,7 @@ model ContentAsset {
   externalUrl     String?
   storagePath     String?
   metadata        Json?
+  deletedAt       DateTime?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   contentItem     ContentItem    @relation(fields: [contentItemId], references: [id], onDelete: Cascade)

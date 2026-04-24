@@ -19,6 +19,7 @@ import {
   TranslationStatus,
   UpstreamSystem,
 } from "@prisma/client";
+import pg from "pg";
 
 const connectionString = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
 
@@ -26,11 +27,11 @@ if (!connectionString) {
   throw new Error("DIRECT_DATABASE_URL or DATABASE_URL must be set for seeding.");
 }
 
-const prisma = new PrismaClient({
-  adapter: new PrismaPg({
-    connectionString,
-  }),
-});
+process.env.DATABASE_URL = connectionString;
+
+const pool = new pg.Pool({ connectionString });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 async function upsertUserWithRoles(email, name, roles) {
   const user = await prisma.user.upsert({
@@ -65,6 +66,26 @@ async function upsertUserWithRoles(email, name, roles) {
   }
 
   return user;
+}
+
+async function ensureGoogleConnectionForUser(user, { googleEmail = user.email, refreshToken = null } = {}) {
+  await prisma.googleConnection.upsert({
+    where: { userId: user.id },
+    create: {
+      userId: user.id,
+      googleSub: `sub-${user.id}`,
+      googleEmail,
+      accessToken: "dev-mock-token",
+      refreshToken,
+      scope:
+        "openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/spreadsheets.readonly",
+      active: true,
+    },
+    update: {
+      googleEmail,
+      active: true,
+    },
+  });
 }
 
 async function ensureImportReceipt({
@@ -388,14 +409,41 @@ async function upsertContentItem(input) {
 
 async function main() {
   const alinaEmail = process.env.SEED_ALINA_EMAIL ?? "alina@zazmic.com";
-  const julianoEmail = process.env.SEED_JULIANO_EMAIL ?? "juliano@zazmic.com";
-
-  const alina = await upsertUserWithRoles(alinaEmail, "Alina", [AppRole.ADMIN, AppRole.APPROVER]);
-  const juliano = await upsertUserWithRoles(julianoEmail, "Juliano", [
+  const julianoEmail = process.env.SEED_JULIANO_EMAIL ?? "juliano.silva@zazmic.com";
+  const julianoLegacyEmail = process.env.SEED_JULIANO_LEGACY_EMAIL ?? "juliano@zazmic.com";
+  const julianoRoles = [
     AppRole.ADMIN,
     AppRole.EDITOR,
     AppRole.TRANSLATION_APPROVER,
-  ]);
+  ];
+
+  const alina = await upsertUserWithRoles(alinaEmail, "Alina", [AppRole.ADMIN, AppRole.APPROVER]);
+  const juliano = await upsertUserWithRoles(julianoEmail, "Juliano", julianoRoles);
+  const julianoLegacy =
+    julianoLegacyEmail.toLowerCase() === julianoEmail.toLowerCase()
+      ? juliano
+      : await upsertUserWithRoles(julianoLegacyEmail, "Juliano", julianoRoles);
+
+  // Ensure Google connections for dev users so Scan Drive doesn't fail with NO_GOOGLE_CONNECTION
+  // In a real environment, these tokens would be obtained via the OAuth flow.
+  // For local dev, we seed them so the connection record exists.
+  await ensureGoogleConnectionForUser(alina, {
+    refreshToken: process.env.ALINA_GOOGLE_REFRESH_TOKEN || null,
+  });
+
+  await ensureGoogleConnectionForUser(juliano, {
+    refreshToken: process.env.JULIANO_GOOGLE_REFRESH_TOKEN || null,
+  });
+
+  if (julianoLegacy.id !== juliano.id) {
+    await ensureGoogleConnectionForUser(julianoLegacy, {
+      googleEmail: juliano.email,
+      refreshToken:
+        process.env.JULIANO_LEGACY_GOOGLE_REFRESH_TOKEN ||
+        process.env.JULIANO_GOOGLE_REFRESH_TOKEN ||
+        null,
+    });
+  }
 
   await prisma.contentItem.deleteMany({
     where: {
@@ -1839,9 +1887,11 @@ async function main() {
 main()
   .then(async () => {
     await prisma.$disconnect();
+    await pool.end();
   })
   .catch(async (error) => {
     console.error(error);
     await prisma.$disconnect();
+    await pool.end();
     process.exit(1);
   });

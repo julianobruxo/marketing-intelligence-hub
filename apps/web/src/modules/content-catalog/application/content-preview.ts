@@ -24,10 +24,6 @@ function collectUrlCandidates(planningSnapshot: unknown) {
   }
 
   const planning = readRecord(snapshot.planning);
-  const sourceMetadata = readRecord(snapshot.sourceMetadata);
-  const source = readRecord(snapshot.source);
-  const rawRow = readRecord(source?.rawRow);
-
   const candidates: Array<{ url: string; label: string }> = [];
 
   const pushCandidate = (value: unknown, label: string) => {
@@ -44,21 +40,6 @@ function collectUrlCandidates(planningSnapshot: unknown) {
   };
 
   pushCandidate(planning?.sourceAssetLink, "Source visual");
-  pushCandidate(sourceMetadata?.publishedPostUrl, "Published link");
-
-  if (rawRow) {
-    for (const [key, value] of Object.entries(rawRow)) {
-      if (typeof value !== "string") {
-        continue;
-      }
-
-      if (!/link|img|image|asset|visual|post/i.test(key)) {
-        continue;
-      }
-
-      pushCandidate(value, key);
-    }
-  }
 
   return candidates;
 }
@@ -82,6 +63,10 @@ function extractGoogleDriveFileId(url: string) {
 }
 
 function toPreviewableImageUrl(url: string) {
+  if (/^data:image\//i.test(url)) {
+    return url;
+  }
+
   if (isImageExtensionUrl(url) || /googleusercontent\.com|ggpht\.com|imgur\.com/i.test(url)) {
     return url;
   }

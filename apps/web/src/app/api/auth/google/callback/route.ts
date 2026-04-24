@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { SignJWT, decodeJwt } from "jose";
+import { SignJWT } from "jose";
+import { env } from "@/shared/config/env";
 import { getPrisma } from "@/shared/lib/prisma";
 import { persistGoogleConnectionForUser } from "@/modules/auth/application/google-connection-service";
+import { verifyGoogleIdToken } from "@/modules/auth/infrastructure/google-jwt-verifier";
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -12,10 +14,43 @@ type GoogleTokenResponse = {
   id_token?: string;
 };
 
+const GOOGLE_OAUTH_STATE_COOKIE = "mih_google_oauth_state";
+const GOOGLE_OAUTH_NONCE_COOKIE = "mih_google_oauth_nonce";
+
+function getCookieValue(cookieHeader: string | null, name: string) {
+  if (!cookieHeader) {
+    return null;
+  }
+
+  const pair = cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
+
+  if (!pair) {
+    return null;
+  }
+
+  const value = pair.slice(name.length + 1).trim();
+  return value.length > 0 ? decodeURIComponent(value) : null;
+}
+
+function clearOAuthCookies(response: NextResponse) {
+  response.cookies.delete(GOOGLE_OAUTH_STATE_COOKIE);
+  response.cookies.delete(GOOGLE_OAUTH_NONCE_COOKIE);
+}
+
+function buildAuthBaseUrl(request: Request) {
+  return env.NEXTAUTH_URL ?? new URL(request.url).origin;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
   const error = searchParams.get("error");
+  const returnedState = searchParams.get("state");
+  const stateCookie = getCookieValue(request.headers.get("cookie"), GOOGLE_OAUTH_STATE_COOKIE);
+  const nonceCookie = getCookieValue(request.headers.get("cookie"), GOOGLE_OAUTH_NONCE_COOKIE);
   console.info("[auth/google/callback] callback reached", {
     hasCode: Boolean(code),
     errorPresent: Boolean(error),
@@ -26,15 +61,44 @@ export async function GET(request: Request) {
       reason: error,
       sessionCreated: false,
     });
-    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error)}`, request.url));
+    const response = NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error)}`, request.url));
+    clearOAuthCookies(response);
+    return response;
+  }
+
+  if (!returnedState || !stateCookie || returnedState !== stateCookie) {
+    console.warn("[auth/google/callback] callback rejected because state validation failed", {
+      hasReturnedState: Boolean(returnedState),
+      hasStateCookie: Boolean(stateCookie),
+      sessionCreated: false,
+    });
+    const response = NextResponse.redirect(new URL(`/login?error=OAuth_state_mismatch`, request.url));
+    clearOAuthCookies(response);
+    return response;
+  }
+
+  if (!nonceCookie) {
+    console.warn("[auth/google/callback] callback rejected because nonce cookie was missing", {
+      sessionCreated: false,
+    });
+    const response = NextResponse.redirect(new URL(`/login?error=OAuth_nonce_missing`, request.url));
+    clearOAuthCookies(response);
+    return response;
   }
 
   if (!code) {
-    return NextResponse.redirect(new URL(`/login?error=No_code_provided`, request.url));
+    const response = NextResponse.redirect(new URL(`/login?error=No_code_provided`, request.url));
+    clearOAuthCookies(response);
+    return response;
   }
 
-  const NEXTAUTH_URL = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
-  const redirectUri = `${NEXTAUTH_URL}/api/auth/google/callback`;
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    const response = NextResponse.redirect(new URL(`/login?error=Google_OAuth_is_not_configured_on_this_server`, request.url));
+    clearOAuthCookies(response);
+    return response;
+  }
+
+  const redirectUri = `${buildAuthBaseUrl(request)}/api/auth/google/callback`;
 
   // 1. Exchange code for token
   const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
@@ -42,8 +106,8 @@ export async function GET(request: Request) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
       redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
@@ -52,22 +116,26 @@ export async function GET(request: Request) {
   if (!tokenResponse.ok) {
     const text = await tokenResponse.text();
     console.error("Google Token Exchange Error:", text);
-    return NextResponse.redirect(new URL(`/login?error=Token_exchange_failed`, request.url));
+    const response = NextResponse.redirect(new URL(`/login?error=Token_exchange_failed`, request.url));
+    clearOAuthCookies(response);
+    return response;
   }
 
   const tokens = (await tokenResponse.json()) as GoogleTokenResponse;
   const idToken = tokens.id_token;
 
   if (!idToken) {
-    return NextResponse.redirect(new URL(`/login?error=No_identity_token`, request.url));
+    const response = NextResponse.redirect(new URL(`/login?error=No_identity_token`, request.url));
+    clearOAuthCookies(response);
+    return response;
   }
 
-  // 2. Decode JWT and extract email
-  // (We use decodeJwt since we implicitly trust the token just received directly from Google via TLS,
-  // but verifying the signature against Google certs is best practice in prod)
-  const decoded = decodeJwt(idToken);
-  const email = decoded.email as string | undefined;
-  const googleSub = decoded.sub as string | undefined;
+  // 2. Verify JWT and extract email
+  const verifiedIdentity = await verifyGoogleIdToken(idToken, env.GOOGLE_CLIENT_ID, {
+    expectedNonce: nonceCookie,
+  });
+  const email = verifiedIdentity.email;
+  const googleSub = verifiedIdentity.sub;
 
   console.info("[auth/google/callback] google identity resolved", {
     email,
@@ -78,7 +146,9 @@ export async function GET(request: Request) {
     console.warn("[auth/google/callback] callback rejected because identity payload was incomplete", {
       sessionCreated: false,
     });
-    return NextResponse.redirect(new URL(`/login?error=No_email_provided`, request.url));
+    const response = NextResponse.redirect(new URL(`/login?error=No_email_provided`, request.url));
+    clearOAuthCookies(response);
+    return response;
   }
 
   // 3. Domain Restriction
@@ -88,7 +158,7 @@ export async function GET(request: Request) {
       domainAccepted: false,
       sessionCreated: false,
     });
-    return NextResponse.redirect(
+    const response = NextResponse.redirect(
       new URL(
         `/login?error=${encodeURIComponent(
           "Google sign-in succeeded, but this app only allows @zazmic.com accounts. Please sign in with your Zazmic Google account.",
@@ -96,6 +166,8 @@ export async function GET(request: Request) {
         request.url,
       ),
     );
+    clearOAuthCookies(response);
+    return response;
   }
 
   // 4. Provision Check
@@ -108,7 +180,9 @@ export async function GET(request: Request) {
       domainAccepted: true,
       sessionCreated: false,
     });
-    return NextResponse.redirect(new URL(`/login?error=Your+account+is+not+provisioned+in+the+system.+Contact+an+administrator.`, request.url));
+    const response = NextResponse.redirect(new URL(`/login?error=Your+account+is+not+provisioned+in+the+system.+Contact+an+administrator.`, request.url));
+    clearOAuthCookies(response);
+    return response;
   }
 
   const expiresAt =
@@ -127,7 +201,7 @@ export async function GET(request: Request) {
   });
 
   // 5. Establish robust Session Cookie
-  const secretBytes = new TextEncoder().encode(process.env.NEXTAUTH_SECRET ?? "default-local-secret-for-dev");
+  const secretBytes = new TextEncoder().encode(env.NEXTAUTH_SECRET);
   const sessionToken = await new SignJWT({ email, sub: user.id })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -142,6 +216,7 @@ export async function GET(request: Request) {
     path: "/",
     maxAge: 7 * 24 * 60 * 60, // 7 days
   });
+  clearOAuthCookies(response);
 
   console.info("[auth/google/callback] session created", {
     email,

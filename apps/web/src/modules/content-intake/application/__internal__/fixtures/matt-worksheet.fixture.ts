@@ -119,9 +119,9 @@ export const mattWorksheet: GoogleSheetsRawWorksheetImport = {
  */
 export const mattFixtureExpectations = [
   { rowIndex: 1, shouldQualify: true,  publishedPath: false, label: "LinkedIn post full copy" },
-  { rowIndex: 2, shouldQualify: true,  publishedPath: true,  label: "published via post URL" },
+  { rowIndex: 2, shouldQualify: true,  publishedPath: false, label: "published via post URL — postUrl column no longer operational" },
   { rowIndex: 3, shouldQualify: true,  publishedPath: false, label: "past-deadline post (LATE)" },
-  { rowIndex: 4, shouldQualify: true,  publishedPath: false, label: "topic-only brief row" },
+  { rowIndex: 4, shouldQualify: false, publishedPath: false, label: "topic-only row — no operational content fields" },
   // Hashtag row: isRowQueueCandidate=TRUE ("Hashtags" in date col + title-like text).
   // Final exclusion is handled by postAiFilterRow() via DETERMINISTIC_SKIP_PATTERNS.
   { rowIndex: 5, shouldQualify: true,  publishedPath: false, label: "hashtag block header (blocked by postAiFilterRow, not isRowQueueCandidate)" },

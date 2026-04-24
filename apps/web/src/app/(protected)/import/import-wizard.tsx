@@ -48,6 +48,10 @@ type ActivityEntry = {
   occurredAt: string;
 };
 
+type StagedSpreadsheetViewSnapshot = StagedSpreadsheetSnapshot & {
+  skipReason: string | null;
+};
+
 type PersistedImportWizardState = {
   scanState: ScanState;
   query: string;
@@ -55,7 +59,7 @@ type PersistedImportWizardState = {
   activeGroup: DriveSourceGroup | "ALL";
   page: number;
   scanResult: DriveImportScanResponse | null;
-  stagedSpreadsheets: StagedSpreadsheetSnapshot[];
+  stagedSpreadsheets: StagedSpreadsheetViewSnapshot[];
   selectedSpreadsheetIds: string[];
   selectedStagedIds: string[];
   reimportStrategy: DriveReimportStrategy;
@@ -74,6 +78,18 @@ function formatDateTime(value: string) {
 
 function formatSourceGroupLabel(group: DriveSourceGroup | "ALL") {
   return formatDriveSourceGroupLabel(group);
+}
+
+/**
+ * Extracts the owner name from a spreadsheet name following the "SMM Plan | Owner Name" convention.
+ * Mirrors the same universal rule applied in queue rows and detail cards.
+ */
+function extractOwnerFromSpreadsheetName(spreadsheetName: string | null | undefined): string | null {
+  if (!spreadsheetName) return null;
+  const pipeIndex = spreadsheetName.indexOf("|");
+  if (pipeIndex === -1) return null;
+  const owner = spreadsheetName.slice(pipeIndex + 1).trim();
+  return owner.length > 0 ? owner : null;
 }
 
 function getReimportStrategyLabel(value: DriveReimportStrategy) {
@@ -95,8 +111,8 @@ function sumBy<T>(items: T[], selector: (item: T) => number) {
   return items.reduce((sum, item) => sum + selector(item), 0);
 }
 
-function uniqueByDriveFileId(items: StagedSpreadsheetSnapshot[]) {
-  const map = new Map<string, StagedSpreadsheetSnapshot>();
+function uniqueByDriveFileId(items: StagedSpreadsheetViewSnapshot[]) {
+  const map = new Map<string, StagedSpreadsheetViewSnapshot>();
   for (const item of items) {
     map.set(item.driveFileId, item);
   }
@@ -111,7 +127,16 @@ function normalizeStoredIds(value: unknown) {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-function getStageStatusLabel(record: StagedSpreadsheetSnapshot) {
+function normalizeStagedSpreadsheetSnapshot(record: StagedSpreadsheetSnapshot | StagedSpreadsheetViewSnapshot) {
+  return {
+    ...record,
+    skipReason: typeof (record as Record<string, unknown>).skipReason === "string"
+      ? ((record as Record<string, unknown>).skipReason as string)
+      : null,
+  } satisfies StagedSpreadsheetViewSnapshot;
+}
+
+function getStageStatusLabel(record: StagedSpreadsheetViewSnapshot) {
   switch (record.state) {
     case "SENT_TO_QUEUE":
       return "Sent to Queue";
@@ -147,6 +172,7 @@ function SpreadsheetResultRow({
 }) {
   return (
     <label
+      data-testid="spreadsheet-item"
       className={cn(
         "group flex cursor-pointer items-start justify-between gap-4 rounded-[22px] border px-5 py-4 text-left transition-default",
         selected
@@ -207,12 +233,13 @@ function StagedSpreadsheetRow({
   selected,
   onToggle,
 }: {
-  record: StagedSpreadsheetSnapshot;
+  record: StagedSpreadsheetViewSnapshot;
   selected: boolean;
   onToggle: () => void;
 }) {
   return (
     <label
+      data-testid={record.skipReason ? "staging-row-skipped" : "staging-row-valid"}
       className={cn(
         "group flex cursor-pointer items-start justify-between gap-4 rounded-[22px] border px-5 py-4 text-left transition-default",
         selected
@@ -244,7 +271,7 @@ function StagedSpreadsheetRow({
           </div>
 
           <p className="mt-1.5 text-sm leading-6 text-slate-500 dark:text-[#95A7CB]">
-            {record.owner} · {formatDriveSourceGroupLabel(record.sourceGroup as DriveSourceGroup)} · {record.lastUpdatedAt ? formatDate(record.lastUpdatedAt) : "Unknown update"}
+            {extractOwnerFromSpreadsheetName(record.spreadsheetName) ?? record.owner} · {record.lastUpdatedAt ? formatDate(record.lastUpdatedAt) : "Unknown update"}
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -268,6 +295,15 @@ function StagedSpreadsheetRow({
               Kept {record.keptRowCount}
             </span>
           </div>
+
+          {record.skipReason ? (
+            <p
+              className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800 dark:border-[rgba(245,158,11,0.3)] dark:bg-[rgba(69,44,7,0.75)] dark:text-amber-300"
+              data-testid="skip-reason"
+            >
+              {record.skipReason}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -360,7 +396,7 @@ function ConfirmModal({
                 <div>
                   <p className="text-sm font-semibold text-slate-950 dark:text-slate-100">{record.spreadsheetName}</p>
                   <p className="mt-1 text-sm text-slate-500 dark:text-[#95A7CB]">
-                    {record.sourceContext.owner} - {formatDriveSourceGroupLabel(record.sourceContext.sourceGroup)}
+                    {extractOwnerFromSpreadsheetName(record.spreadsheetName) ?? record.sourceContext.owner}
                   </p>
                 </div>
                 <Badge variant="outline" className="border-slate-200 bg-white text-[11px] text-slate-600 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(18,26,51,0.8)] dark:text-[#A8B7DA]">
@@ -421,6 +457,7 @@ function ConfirmModal({
               onClick={onConfirm}
               disabled={confirming}
               className="transition-default disabled:opacity-50"
+              data-testid="import-button"
               style={{ backgroundColor: "#E8584A", color: "white" }}
             >
               {confirming ? (
@@ -439,14 +476,54 @@ function ConfirmModal({
   );
 }
 
-export function ImportWizard() {
+type ImportWizardProps = {
+  driveProviderMode: "MOCK" | "REAL";
+};
+
+async function readSkipReason(batchId: string) {
+  try {
+    const response = await fetch(`/api/import/${batchId}/rows?status=SKIPPED`, {
+      credentials: "same-origin",
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json().catch(() => null)) as
+      | { rows?: Array<{ reason?: string | null; skipStage?: string | null }> }
+      | null;
+
+    const row = payload?.rows?.find((entry) => {
+      const reason = typeof entry.reason === "string" ? entry.reason.trim() : "";
+      const skipStage = typeof entry.skipStage === "string" ? entry.skipStage.trim() : "";
+      return reason.length > 0 || skipStage.length > 0;
+    });
+
+    if (!row) {
+      return null;
+    }
+
+    const reason = typeof row.reason === "string" ? row.reason.trim() : "";
+    if (reason.length > 0) {
+      return reason;
+    }
+
+    const skipStage = typeof row.skipStage === "string" ? row.skipStage.trim() : "";
+    return skipStage.length > 0 ? skipStage : null;
+  } catch {
+    return null;
+  }
+}
+
+export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
   const [scanState, setScanState] = useState<ScanState>("idle");
   const [query, setQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState<DriveSourceGroup | "ALL">("ALL");
   const [page, setPage] = useState(1);
   const [scanResult, setScanResult] = useState<DriveImportScanResponse | null>(null);
-  const [stagedSpreadsheets, setStagedSpreadsheets] = useState<StagedSpreadsheetSnapshot[]>([]);
+  const [stagedSpreadsheets, setStagedSpreadsheets] = useState<StagedSpreadsheetViewSnapshot[]>([]);
   const [selectedSpreadsheetIds, setSelectedSpreadsheetIds] = useState<Set<string>>(new Set());
   const [selectedStagedIds, setSelectedStagedIds] = useState<Set<string>>(new Set());
   const [reimportStrategy, setReimportStrategy] = useState<DriveReimportStrategy>("UPDATE");
@@ -507,7 +584,11 @@ export function ImportWizard() {
       setActiveGroup(isValidSourceGroup(parsed.activeGroup) ? parsed.activeGroup : "ALL");
       setPage(Math.max(1, parsed.page ?? 1));
       setScanResult(parsed.scanResult ?? null);
-      setStagedSpreadsheets(Array.isArray(parsed.stagedSpreadsheets) ? parsed.stagedSpreadsheets : []);
+      setStagedSpreadsheets(
+        Array.isArray(parsed.stagedSpreadsheets)
+          ? parsed.stagedSpreadsheets.map((record) => normalizeStagedSpreadsheetSnapshot(record as StagedSpreadsheetSnapshot))
+          : [],
+      );
       setSelectedSpreadsheetIds(new Set(normalizeStoredIds(parsed.selectedSpreadsheetIds)));
       setSelectedStagedIds(new Set(normalizeStoredIds(parsed.selectedStagedIds)));
       setReimportStrategy(parsed.reimportStrategy ?? "UPDATE");
@@ -677,6 +758,13 @@ export function ImportWizard() {
         reimportStrategy,
       });
 
+      const stagedWithReasons = await Promise.all(
+        result.spreadsheets.map(async (spreadsheet) => ({
+          ...spreadsheet,
+          skipReason: await readSkipReason(spreadsheet.id),
+        })),
+      );
+
       console.info("[TRACE_IMPORT_QUEUE][UI] stage:done", {
         driveFileIds,
         batchIdsCreated: result.spreadsheets.map((spreadsheet) => spreadsheet.id),
@@ -689,7 +777,7 @@ export function ImportWizard() {
           conflictRowsDetected: spreadsheet.conflictRowsDetected,
         })),
       });
-      setStagedSpreadsheets((current) => uniqueByDriveFileId([...current, ...result.spreadsheets]));
+      setStagedSpreadsheets((current) => uniqueByDriveFileId([...current, ...stagedWithReasons]));
       setSelectedSpreadsheetIds(new Set());
       setModalOpen(false);
       setScanState("ready");
@@ -829,6 +917,13 @@ export function ImportWizard() {
                 <Badge className="rounded-full bg-slate-950 px-3 py-1 text-white hover:bg-slate-950 dark:bg-indigo-500/25 dark:text-[#C8D1FF]">
                   Command Center
                 </Badge>
+                <Badge
+                  variant="outline"
+                  data-testid="provider-mode-badge"
+                  className="border-slate-200 bg-white text-[11px] text-slate-600 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(18,26,51,0.8)] dark:text-[#A8B7DA]"
+                >
+                  Drive {driveProviderMode}
+                </Badge>
                 <Badge variant="outline" className="border-slate-200 bg-white text-[11px] text-slate-600 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(18,26,51,0.8)] dark:text-[#A8B7DA]">
                   {DRIVE_IMPORT_FOLDER_NAME}
                 </Badge>
@@ -882,6 +977,7 @@ export function ImportWizard() {
                     void performScan();
                   }}
                   disabled={isScanning}
+                  data-testid="scan-button"
                   className="h-12 min-w-[10rem] rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 disabled:opacity-50"
                   style={{ backgroundColor: "#E8584A", color: "white" }}
                 >
@@ -1038,6 +1134,7 @@ export function ImportWizard() {
                 type="button"
                 onClick={() => setModalOpen(true)}
                 disabled={selectedSpreadsheetIds.size === 0}
+                data-testid="import-selected-button"
                 className="h-11 rounded-xl px-4 font-semibold transition-default hover:-translate-y-0.5 disabled:opacity-50"
                 style={{ backgroundColor: "#E8584A", color: "white" }}
               >
@@ -1046,7 +1143,7 @@ export function ImportWizard() {
             </div>
           </div>
 
-          <div className="max-h-[34rem] min-h-0 space-y-3 overflow-y-auto overflow-x-hidden pr-1">
+          <div className="max-h-[34rem] min-h-0 space-y-3 overflow-y-auto overflow-x-hidden pr-1" data-testid="spreadsheet-list">
             {isScanning ? (
               <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(19,27,52,0.74)]">
                 <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-400" />
@@ -1126,7 +1223,7 @@ export function ImportWizard() {
           ) : null}
         </section>
 
-        <section className="app-surface-panel space-y-5 rounded-[30px] px-5 py-5 sm:px-6 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+        <section className="app-surface-panel space-y-5 rounded-[30px] px-5 py-5 sm:px-6 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]" data-testid="staging-results">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
               <SectionHeading>Staging & send</SectionHeading>
@@ -1141,6 +1238,7 @@ export function ImportWizard() {
                 type="button"
                 onClick={() => void sendSelectedToWorkflowQueue()}
                 disabled={selectedStagedIds.size === 0 || isSending}
+                data-testid="send-to-workflow-queue-button"
                 className="h-12 rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 disabled:opacity-50"
                 style={{ backgroundColor: "#E8584A", color: "white" }}
               >
@@ -1207,7 +1305,11 @@ export function ImportWizard() {
           ) : (
             <div className="mt-4 space-y-3">
               {activity.slice(0, 5).map((entry) => (
-                <div key={entry.id} className="flex items-start gap-3 rounded-[22px] border border-slate-100 bg-slate-50/70 px-4 py-3 dark:border-[rgba(88,108,186,0.24)] dark:bg-[rgba(19,27,52,0.74)]">
+                <div
+                  key={entry.id}
+                  className="flex items-start gap-3 rounded-[22px] border border-slate-100 bg-slate-50/70 px-4 py-3 dark:border-[rgba(88,108,186,0.24)] dark:bg-[rgba(19,27,52,0.74)]"
+                  data-testid="workflow-activity-item"
+                >
                   <Clock3 className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400 dark:text-[#8B97B7]" />
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{entry.label}</p>

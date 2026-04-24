@@ -1,12 +1,12 @@
 /**
- * Regression tests for the import → queue flow.
+ * Regression tests for the import Ã¢â€ â€™ queue flow.
  *
  * Target: lock down the business rules that were recently stabilised.
  * Covers:
  *   1. Worksheet-level X/Twitter exclusion
  *   2. Deterministic column extraction (Date, Title, Brief, LinkedIn Copy, Published)
  *   3. Queue candidate qualification (teaser, Substack, brief-only, published, empty/decorative)
- *   4. Duplicate title + different date → distinct content signatures
+ *   4. Duplicate title + different date Ã¢â€ â€™ distinct content signatures
  *   5. Published / unpublished operational-status mapping
  */
 
@@ -20,17 +20,21 @@ import {
   buildFallbackTitle,
   buildContentSignature,
   normalizeBooleanish,
+  deriveFirstMeaningfulLine,
+  isGenericContentLabel,
   type AiSemanticFlags,
   type WorksheetExtractedFields,
 } from "@/modules/content-intake/application/__internal__/queue-helpers";
 
-import { inferContentOperationalStatus } from "@/modules/content-intake/domain/infer-content-status";
+import {
+  inferContentOperationalStatus,
+} from "@/modules/content-intake/domain/infer-content-status";
 
 // ============================================================
 // 1. WORKSHEET EXCLUSION
 // ============================================================
 
-describe("isXAccountWorksheet — worksheet-level X/Twitter exclusion", () => {
+describe("isXAccountWorksheet Ã¢â‚¬â€ worksheet-level X/Twitter exclusion", () => {
   const excluded = [
     "X Account",
     "x account",
@@ -64,7 +68,7 @@ describe("isXAccountWorksheet — worksheet-level X/Twitter exclusion", () => {
     "Operations",
     "Substack",           // Substack is NOT a worksheet-level exclusion
     "Company Page",
-    "",                    // empty string — not excluded, just meaningless
+    "",                    // empty string Ã¢â‚¬â€ not excluded, just meaningless
   ];
 
   for (const name of included) {
@@ -78,21 +82,23 @@ describe("isXAccountWorksheet — worksheet-level X/Twitter exclusion", () => {
 // 2. DETERMINISTIC EXTRACTION
 // ============================================================
 
-describe("buildWorksheetColumnMap — header alias detection", () => {
-  it("maps standard Yann-style headers correctly", () => {
+describe("buildWorksheetColumnMap Ã¢â‚¬â€ header alias detection", () => {
+  it("maps standard Yann-style headers correctly — only operational fields are recognised", () => {
     const headers = ["Date", "Title", "Copywriter Brief", "LinkedIn Copy", "Published", "Platform", "Deadline"];
     const colMap = buildWorksheetColumnMap(headers);
 
     expect(colMap.plannedDate).toBe(0);
     expect(colMap.title).toBe(1);
-    expect(colMap.brief).toBe(2);
+    // "Copywriter Brief" is not an operational field — must not be mapped
+    expect((colMap as Record<string, unknown>).brief).toBeUndefined();
     expect(colMap.linkedinCopy).toBe(3);
     expect(colMap.publishedFlag).toBe(4);
-    expect(colMap.platformLabel).toBe(5);
+    // "Platform" is not an operational field — must not be mapped
+    expect((colMap as Record<string, unknown>).platformLabel).toBeUndefined();
     expect(colMap.contentDeadline).toBe(6);
   });
 
-  it("handles multi-line headers — collapses to first line", () => {
+  it("handles multi-line headers Ã¢â‚¬â€ collapses to first line", () => {
     // Real Yann sheet: "LinkedIn\n(Up to 3000 characters)"
     const headers = ["Date", "LinkedIn\n(Up to 3000 characters)"];
     const colMap = buildWorksheetColumnMap(headers);
@@ -109,13 +115,14 @@ describe("buildWorksheetColumnMap — header alias detection", () => {
     expect(colMap.linkedinCopy).toBe(1);
   });
 
-  it("maps alternative header names", () => {
+  it("maps alternative header names — Topic and Platform are not operational fields", () => {
     const headers = ["Planned Date", "Post Title", "Topic", "Copy (EN)", "Status"];
     const colMap = buildWorksheetColumnMap(headers);
 
     expect(colMap.plannedDate).toBe(0);
     expect(colMap.title).toBe(1);
-    expect(colMap.brief).toBe(2);
+    // "Topic" is not an operational field — must not be mapped
+    expect((colMap as Record<string, unknown>).topic).toBeUndefined();
     expect(colMap.linkedinCopy).toBe(3);
     expect(colMap.publishedFlag).toBe(4);
   });
@@ -127,8 +134,8 @@ describe("buildWorksheetColumnMap — header alias detection", () => {
   });
 });
 
-describe("extractColumnarRowFields — row value extraction", () => {
-  it("extracts all fields when columns are present and non-empty", () => {
+describe("extractColumnarRowFields Ã¢â‚¬â€ row value extraction", () => {
+  it("extracts operational fields when present — Copywriter Brief column is ignored", () => {
     const headers = ["Date", "Title", "Copywriter Brief", "LinkedIn Copy", "Published"];
     const colMap = buildWorksheetColumnMap(headers);
     const rowValues = ["2025-05-01", "My Big Announcement", "Use case details here", "Final post copy text.", "Yes"];
@@ -137,7 +144,8 @@ describe("extractColumnarRowFields — row value extraction", () => {
 
     expect(fields.plannedDate).toBe("2025-05-01");
     expect(fields.title).toBe("My Big Announcement");
-    expect(fields.brief).toBe("Use case details here");
+    // "Copywriter Brief" is not operational — must not be extracted
+    expect((fields as Record<string, unknown>).brief).toBeUndefined();
     expect(fields.linkedinCopy).toBe("Final post copy text.");
     expect(fields.publishedFlag).toBe("Yes");
   });
@@ -160,7 +168,7 @@ describe("extractColumnarRowFields — row value extraction", () => {
     const fields = extractColumnarRowFields(colMap, rowValues);
     expect(fields.plannedDate).toBe("2025-05-01");
     expect(fields.title).toBeUndefined();
-    expect(fields.brief).toBeUndefined();
+    // brief is not in the operational field set regardless
   });
 
   it("handles rows shorter than the header array gracefully", () => {
@@ -184,7 +192,6 @@ describe("extractColumnarRowFields — row value extraction", () => {
 function qualifiedAiFlags(overrides: Partial<AiSemanticFlags> = {}): AiSemanticFlags {
   return {
     is_empty_or_unusable: false,
-    has_editorial_brief: false,
     has_title: false,
     has_final_copy: false,
     is_published: false,
@@ -195,44 +202,41 @@ function qualifiedAiFlags(overrides: Partial<AiSemanticFlags> = {}): AiSemanticF
 function emptyAiFlags(): AiSemanticFlags {
   return {
     is_empty_or_unusable: true,
-    has_editorial_brief: false,
     has_title: false,
     has_final_copy: false,
     is_published: false,
   };
 }
 
-describe("isRowQueueCandidate — qualification logic", () => {
-  it("TEASER ROW: qualifies when date + brief present (no copy yet)", () => {
-    const det: WorksheetExtractedFields = { plannedDate: "2025-05-12", brief: "Teaser about new product launch" };
-    const ai = qualifiedAiFlags({ has_editorial_brief: true });
-    expect(isRowQueueCandidate(ai, det)).toBe(true);
+describe("isRowQueueCandidate - qualification logic", () => {
+  it("TEASER ROW: does not qualify from date alone — needs title, copy, or published signal", () => {
+    const det: WorksheetExtractedFields = { plannedDate: "2025-05-12" };
+    const ai = qualifiedAiFlags();
+    expect(isRowQueueCandidate(ai, det)).toBe(false);
   });
 
   it("SUBSTACK ROW: qualifies when date + title present, even if AI flags non-linkedin platform", () => {
-    // AI might set is_non_linkedin_platform = true, but isRowQueueCandidate does NOT receive that flag.
-    // The deterministic layer (det.plannedDate + det.title) is enough to qualify the row.
     const det: WorksheetExtractedFields = { plannedDate: "2025-05-20", title: "Substack article: AI trends" };
     const ai = qualifiedAiFlags({ has_title: true });
     expect(isRowQueueCandidate(ai, det)).toBe(true);
   });
 
-  it("BRIEF-ONLY ROW: qualifies when date + brief present with no copy and no title", () => {
-    const det: WorksheetExtractedFields = { plannedDate: "2025-06-01", brief: "Write about leadership" };
-    const ai = qualifiedAiFlags({ has_editorial_brief: true });
-    expect(isRowQueueCandidate(ai, det)).toBe(true);
+  it("DATE-ONLY ROW: does not qualify when no operational title, copy, or published signal exists", () => {
+    const det: WorksheetExtractedFields = { plannedDate: "2025-06-01" };
+    const ai = qualifiedAiFlags();
+    expect(isRowQueueCandidate(ai, det)).toBe(false);
   });
 
-  it("PUBLISHED ROW: qualifies when AI signals is_published even without det fields", () => {
+  it("PUBLISHED ROW: does not qualify from AI signal alone without det fields", () => {
     const det: WorksheetExtractedFields = {};
     const ai = qualifiedAiFlags({ is_published: true });
-    expect(isRowQueueCandidate(ai, det)).toBe(true);
+    expect(isRowQueueCandidate(ai, det)).toBe(false);
   });
 
   it("PUBLISHED ROW (det path): qualifies when date + linkedinCopy present", () => {
     const det: WorksheetExtractedFields = {
       plannedDate: "2025-04-10",
-      linkedinCopy: "Our team grew by 50% this quarter…",
+      linkedinCopy: "Our team grew by 50% this quarter...",
       publishedFlag: "Yes",
     };
     const ai = qualifiedAiFlags({ has_final_copy: true, is_published: true });
@@ -246,7 +250,6 @@ describe("isRowQueueCandidate — qualification logic", () => {
   });
 
   it("DECORATIVE ROW: does NOT qualify even when det has date but no content signals", () => {
-    // date alone without title/brief/copy is insufficient for deterministic qualification
     const det: WorksheetExtractedFields = { plannedDate: "2025-05-01" };
     const ai = emptyAiFlags();
     expect(isRowQueueCandidate(ai, det)).toBe(false);
@@ -258,11 +261,10 @@ describe("isRowQueueCandidate — qualification logic", () => {
     expect(isRowQueueCandidate(ai, det)).toBe(false);
   });
 
-  it("AI-ONLY QUALIFICATION: row with no det fields but AI has brief signal qualifies", () => {
-    // When det found nothing but AI did find signals, AI takes over.
+  it("AI-ONLY QUALIFICATION: row with no deterministic operational fields does not qualify", () => {
     const det: WorksheetExtractedFields = {};
-    const ai = qualifiedAiFlags({ has_editorial_brief: true });
-    expect(isRowQueueCandidate(ai, det)).toBe(true);
+    const ai = qualifiedAiFlags({ has_title: true });
+    expect(isRowQueueCandidate(ai, det)).toBe(false);
   });
 
   it("DETERMINISTIC OVERRIDES AI: qualifies even when AI has no positive flags (but finds det fields)", () => {
@@ -270,19 +272,16 @@ describe("isRowQueueCandidate — qualification logic", () => {
       plannedDate: "2025-07-15",
       title: "Q3 Kickoff Post",
     };
-    // AI found nothing useful but det has date + title
-    const ai = qualifiedAiFlags({
-      // All false — AI did not flag anything
-    });
+    const ai = qualifiedAiFlags();
     expect(isRowQueueCandidate(ai, det)).toBe(true);
   });
 });
 
 // ============================================================
-// 4. DUPLICATE TITLES WITH DIFFERENT DATES → DISTINCT SIGNATURES
+// 4. DUPLICATE TITLES WITH DIFFERENT DATES Ã¢â€ â€™ DISTINCT SIGNATURES
 // ============================================================
 
-describe("buildContentSignature — distinct rows with same title but different dates", () => {
+describe("buildContentSignature Ã¢â‚¬â€ distinct rows with same title but different dates", () => {
   const title = "Weekly AI & Robotics Roundup";
   const copyEnglish = "This week in AI: breakthroughs in robotics.";
   const sourceGroup = "Yann";
@@ -310,7 +309,7 @@ describe("buildContentSignature — distinct rows with same title but different 
 // 5. PUBLISHED / UNPUBLISHED MAPPING
 // ============================================================
 
-describe("normalizeBooleanish — published flag parsing", () => {
+describe("normalizeBooleanish Ã¢â‚¬â€ published flag parsing", () => {
   const truthy = ["Yes", "yes", "YES", "true", "True", "published", "Published", "done", "Done", "complete", "Complete", "completed", "live"];
   for (const v of truthy) {
     it(`treats "${v}" as published (true)`, () => {
@@ -334,58 +333,75 @@ describe("normalizeBooleanish — published flag parsing", () => {
   });
 });
 
-describe("inferContentOperationalStatus — published/unpublished path mapping", () => {
-  it("Published = Yes → PUBLISHED", () => {
+describe("inferContentOperationalStatus Ã¢â‚¬â€ published/unpublished path mapping", () => {
+  it("Published = Yes Ã¢â€ â€™ PUBLISHED", () => {
     const status = inferContentOperationalStatus({
       sourceMetadata: { publishedFlag: "Yes" },
-      planning: { copyEnglish: "Some copy" },
+      planning: {
+        title: "Source title",
+        copyEnglish:
+          "This is the final LinkedIn copy approved in the source spreadsheet. It is intentionally long enough to pass the real-copy threshold, with a complete operator-ready post body.",
+      },
     });
-    expect(status).toBe("PUBLISHED");
+    expect(status).toBe("POSTED");
   });
 
-  it("Published = No with copy → READY_FOR_DESIGN (not published)", () => {
+  it("Published = No with copy Ã¢â€ â€™ READY_FOR_DESIGN (not published)", () => {
     const status = inferContentOperationalStatus({
       sourceMetadata: { publishedFlag: "No" },
-      planning: { copyEnglish: "Here is the actual LinkedIn copy." },
+      planning: {
+        title: "Source title",
+        copyEnglish:
+          "This is the final LinkedIn copy approved in the source spreadsheet. It is intentionally long enough to pass the real-copy threshold, with a complete operator-ready post body.",
+      },
     });
     expect(status).toBe("READY_FOR_DESIGN");
   });
 
-  it("Published = No with no copy → WAITING_FOR_COPY", () => {
+  it("Published = No with no copy Ã¢â€ â€™ WAITING_FOR_COPY", () => {
     const status = inferContentOperationalStatus({
       sourceMetadata: { publishedFlag: "No" },
-      planning: { copyEnglish: "" },
+      planning: { title: "Source title", copyEnglish: "" },
     });
-    expect(status).toBe("WAITING_FOR_COPY");
+    expect(status).toBe("BLOCKED");
   });
 
-  it("publishedPostUrl present → PUBLISHED regardless of flag", () => {
+  it("publishedFlag=\"Yes\" => POSTED regardless of copy or image", () => {
     const status = inferContentOperationalStatus({
-      sourceMetadata: { publishedPostUrl: "https://linkedin.com/post/123" },
-      planning: { copyEnglish: "" },
+      sourceMetadata: { publishedFlag: "Yes" },
+      planning: { title: "Source title", copyEnglish: "" },
     });
-    expect(status).toBe("PUBLISHED");
+    expect(status).toBe("POSTED");
   });
 
-  it("no published signal, no copy → WAITING_FOR_COPY", () => {
+  it("no published signal, no copy Ã¢â€ â€™ WAITING_FOR_COPY", () => {
     const status = inferContentOperationalStatus({
-      planning: { copyEnglish: "" },
+      planning: { title: "Source title", copyEnglish: "" },
     });
-    expect(status).toBe("WAITING_FOR_COPY");
+    expect(status).toBe("BLOCKED");
   });
 
-  it("no published signal, has copy, no deadline → READY_FOR_DESIGN", () => {
+  it("no published signal, has copy, no deadline Ã¢â€ â€™ READY_FOR_DESIGN", () => {
     const status = inferContentOperationalStatus({
-      planning: { copyEnglish: "Ready copy here." },
+      planning: {
+        title: "Source title",
+        copyEnglish:
+          "This is the final LinkedIn copy approved in the source spreadsheet. It is intentionally long enough to pass the real-copy threshold, with a complete operator-ready post body.",
+      },
     });
     expect(status).toBe("READY_FOR_DESIGN");
   });
 
-  it("past deadline with copy → LATE", () => {
+  it("past deadline with copy Ã¢â€ â€™ LATE", () => {
     const status = inferContentOperationalStatus({
-      planning: { copyEnglish: "Copy.", contentDeadline: "2020-01-01" },
+      planning: {
+        title: "Source title",
+        copyEnglish:
+          "This is the final LinkedIn copy approved in the source spreadsheet. It is intentionally long enough to pass the real-copy threshold, with a complete operator-ready post body.",
+        sourceAssetLink: "https://example.com/image.png",
+      },
     });
-    expect(status).toBe("LATE");
+    expect(status).toBe("READY_TO_PUBLISH");
   });
 });
 
@@ -393,28 +409,92 @@ describe("inferContentOperationalStatus — published/unpublished path mapping",
 // 6. TITLE FALLBACK
 // ============================================================
 
-describe("buildFallbackTitle — title derivation priority", () => {
+describe("buildFallbackTitle - title derivation priority", () => {
   it("prefers explicit title when present", () => {
     expect(buildFallbackTitle({ title: "My Title", copy: "Some copy", date: "2025-05-01", rowNumber: 5 })).toBe("My Title");
   });
 
-  it("falls back to first line of copy when title is absent", () => {
+  it("falls back to the date placeholder when title is absent", () => {
     const copy = "First line of post.\nSecond line here.";
-    expect(buildFallbackTitle({ copy, date: "2025-05-01", rowNumber: 5 })).toBe("First line of post.");
+    expect(buildFallbackTitle({ copy, date: "2025-05-01", rowNumber: 5 })).toBe("Post - 2025-05-01");
   });
 
   it("falls back to date label when title and copy are absent", () => {
-    expect(buildFallbackTitle({ date: "2025-05-01", rowNumber: 5 })).toBe("Planned item - 2025-05-01");
+    expect(buildFallbackTitle({ date: "2025-05-01", rowNumber: 5 })).toBe("Post - 2025-05-01");
   });
 
   it("falls back to row number when nothing else is available", () => {
-    expect(buildFallbackTitle({ rowNumber: 7 })).toBe("Planned item - row 7");
+    expect(buildFallbackTitle({ rowNumber: 7 })).toBe("Post - row 7");
   });
 
-  it("truncates extremely long copy first lines to 140 chars", () => {
+  it("ignores copy-only fallback when no title or date is available", () => {
     const longFirstLine = "A".repeat(200);
     const result = buildFallbackTitle({ copy: longFirstLine, rowNumber: 1 });
-    expect(result.length).toBeLessThanOrEqual(141); // 139 chars + ellipsis char
-    expect(result.endsWith("…")).toBe(true);
+    expect(result).toBe("Post - row 1");
+  });
+
+  it("does not derive a title from copy when only copy is present", () => {
+    const copy = "LinkedIn\nClaude AI Learning Doc\nMore detail here...";
+    expect(buildFallbackTitle({ copy, rowNumber: 1 })).toBe("Post - row 1");
+  });
+
+  it("falls back to date when copy has only generic labels", () => {
+    expect(buildFallbackTitle({ copy: "LinkedIn\nSubstack", date: "2025-05-01", rowNumber: 1 })).toBe("Post - 2025-05-01");
+  });
+});
+
+describe("deriveFirstMeaningfulLine Ã¢â‚¬â€ skip generic platform labels", () => {
+  it("skips LinkedIn label and returns the next descriptive line", () => {
+    const text = "LinkedIn\nClaude AI Learning Doc\nthe doc that contains...";
+    expect(deriveFirstMeaningfulLine(text)).toBe("Claude AI Learning Doc");
+  });
+
+  it("skips multiple generic labels before finding real content", () => {
+    const text = "LinkedIn\nSubstack\nWeekly AI & Robotics Roundup";
+    expect(deriveFirstMeaningfulLine(text)).toBe("Weekly AI & Robotics Roundup");
+  });
+
+  it("skips Substack and paid-article labels before returning the next line", () => {
+    const text = "Substack\nPaid article\nAI Voice Agent...";
+    expect(deriveFirstMeaningfulLine(text)).toBe("AI Voice Agent...");
+  });
+
+  it("skips uppercase free-article and news labels", () => {
+    const text = "FREE article\nNews\nOpenClaw Is Dangerous for Your Business";
+    expect(deriveFirstMeaningfulLine(text)).toBe("OpenClaw Is Dangerous for Your Business");
+  });
+
+  it("returns the first line when it is already meaningful", () => {
+    expect(deriveFirstMeaningfulLine("Claude AI Learning Doc\nsome more")).toBe("Claude AI Learning Doc");
+  });
+
+  it("skips lines shorter than 4 chars", () => {
+    expect(deriveFirstMeaningfulLine("Hi\nReal title here")).toBe("Real title here");
+  });
+
+  it("skips URL lines", () => {
+    expect(deriveFirstMeaningfulLine("https://example.com\nReal content")).toBe("Real content");
+  });
+
+  it("skips bullet/number-only lines", () => {
+    expect(deriveFirstMeaningfulLine("---\nActual title")).toBe("Actual title");
+  });
+
+  it("returns undefined when all lines are generic labels", () => {
+    expect(deriveFirstMeaningfulLine("LinkedIn\nSubstack\nVideo")).toBeUndefined();
+  });
+
+  it("returns the full line without truncation Ã¢â‚¬â€ callers apply their own limit", () => {
+    const longLine = "A".repeat(100);
+    expect(deriveFirstMeaningfulLine(longLine)).toHaveLength(100);
+  });
+});
+describe("isGenericContentLabel", () => {
+  it("recognizes normalized paid/free/article/news labels", () => {
+    expect(isGenericContentLabel("Paid article")).toBe(true);
+    expect(isGenericContentLabel("FREE article")).toBe(true);
+    expect(isGenericContentLabel("article")).toBe(true);
+    expect(isGenericContentLabel("News")).toBe(true);
+    expect(isGenericContentLabel("OpenClaw Security Guide")).toBe(false);
   });
 });

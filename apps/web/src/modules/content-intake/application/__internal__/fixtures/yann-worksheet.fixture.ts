@@ -111,7 +111,7 @@ export const yannWorksheet: GoogleSheetsRawWorksheetImport = {
 export const yannFixtureExpectations = [
   { rowIndex: 1, shouldQualify: true,  publishedPath: false, label: "LinkedIn post with full copy" },
   { rowIndex: 2, shouldQualify: true,  publishedPath: false, label: "Substack teaser brief-only" },
-  { rowIndex: 3, shouldQualify: true,  publishedPath: false, label: "brief-only no title no copy" },
+  { rowIndex: 3, shouldQualify: false, publishedPath: false, label: "brief-only no title no copy — not an operational row" },
   { rowIndex: 4, shouldQualify: true,  publishedPath: true,  label: "published row" },
   { rowIndex: 5, shouldQualify: false, publishedPath: false, label: "Week 1 separator" },
   { rowIndex: 6, shouldQualify: false, publishedPath: false, label: "empty row" },

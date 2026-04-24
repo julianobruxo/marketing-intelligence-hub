@@ -7,10 +7,15 @@ import {
   findMappedFieldHeaders,
   qualifySheetRow,
   selectWorksheetCandidate,
+  yannKronbergPlanningProfile,
   zazmicBrazilPlanningProfile,
   type SheetProfile,
 } from "../domain/sheet-profiles";
-import { inferContentOperationalStatus } from "../domain/infer-content-status";
+import {
+  hasImageLink,
+  hasRealCopy,
+  inferContentRouting,
+} from "../domain/infer-content-status";
 import {
   normalizeSheetRowRequestSchema,
   type NormalizeSheetRowRequest,
@@ -18,6 +23,7 @@ import {
 
 const sheetProfiles: Record<string, SheetProfile> = {
   [zazmicBrazilPlanningProfile.key]: zazmicBrazilPlanningProfile,
+  [yannKronbergPlanningProfile.key]: yannKronbergPlanningProfile,
   [driveSmmPlanImportProfile.key]: driveSmmPlanImportProfile,
 };
 
@@ -70,6 +76,45 @@ function buildRowMap(headers: string[], rowValues: string[]) {
   }, {});
 }
 
+function buildOperationalRawRow(input: {
+  plannedDate?: string;
+  campaignLabel?: string;
+  copyEnglish: string;
+  sourceAssetLink?: string;
+  contentDeadline?: string;
+  publishedFlag?: string | boolean;
+}) {
+  const rawRow: Record<string, string | boolean> = {
+    "LinkedIn Copy": input.copyEnglish,
+  };
+
+  if (input.plannedDate?.trim()) {
+    rawRow.Date = input.plannedDate.trim();
+  }
+
+  if (input.campaignLabel?.trim()) {
+    rawRow.Title = input.campaignLabel.trim();
+  }
+
+  if (input.sourceAssetLink?.trim()) {
+    rawRow["IMG LINK"] = input.sourceAssetLink.trim();
+  }
+
+  if (input.contentDeadline?.trim()) {
+    rawRow["Content Deadline"] = input.contentDeadline.trim();
+  }
+
+  if (typeof input.publishedFlag === "string") {
+    if (input.publishedFlag.trim()) {
+      rawRow.Published = input.publishedFlag.trim();
+    }
+  } else if (typeof input.publishedFlag === "boolean") {
+    rawRow.Published = input.publishedFlag;
+  }
+
+  return rawRow;
+}
+
 function normalizeComparableCell(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -116,10 +161,8 @@ export function normalizeSheetRow(rawRequest: unknown) {
 
   const planningFields = {
     plannedDate: mappedFields.plannedDate ? optionalNonEmpty(rowMap[mappedFields.plannedDate.header]) : undefined,
-    platformLabel: mappedFields.platformLabel ? optionalNonEmpty(rowMap[mappedFields.platformLabel.header]) : undefined,
     campaignLabel: mappedFields.campaignLabel ? optionalNonEmpty(rowMap[mappedFields.campaignLabel.header]) : undefined,
     copyEnglish: mappedFields.copyEnglish ? rowMap[mappedFields.copyEnglish.header] ?? "" : "",
-    copyPortuguese: mappedFields.copyPortuguese ? optionalNonEmpty(rowMap[mappedFields.copyPortuguese.header]) : undefined,
     sourceAssetLink: mappedFields.sourceAssetLink ? optionalNonEmpty(rowMap[mappedFields.sourceAssetLink.header]) : undefined,
     contentDeadline: mappedFields.contentDeadline ? optionalNonEmpty(rowMap[mappedFields.contentDeadline.header]) : undefined,
   };
@@ -128,23 +171,6 @@ export function normalizeSheetRow(rawRequest: unknown) {
     publishedFlag: mappedFields.publishedFlag
       ? optionalNonEmpty(rowMap[mappedFields.publishedFlag.header])
       : undefined,
-    publishedPostUrl: mappedFields.publishedPostUrl
-      ? optionalNonEmpty(rowMap[mappedFields.publishedPostUrl.header])
-      : undefined,
-    outreachAccount: mappedFields.outreachAccount
-      ? optionalNonEmpty(rowMap[mappedFields.outreachAccount.header])
-      : undefined,
-    outreachCopy: mappedFields.outreachCopy
-      ? optionalNonEmpty(rowMap[mappedFields.outreachCopy.header])
-      : undefined,
-    extra: unmappedHeaders.reduce<Record<string, string>>((accumulator, header) => {
-      const value = rowMap[header];
-      if (value && value.trim().length > 0) {
-        accumulator[header] = value;
-      }
-
-      return accumulator;
-    }, {}),
   };
 
   const qualifiedRow = qualifySheetRow(request.source.rowValues, planningFields, profile);
@@ -168,6 +194,12 @@ export function normalizeSheetRow(rawRequest: unknown) {
     signals: qualifiedRow.signals,
     isPublishedRow: qualifiedRow.isPublishedRow,
   };
+
+  // Rows rejected solely because a required planning field (typically copyEnglish) is
+  // missing should not disappear silently. If the row has at least a title/brief and a
+  // scheduling signal it is a legitimate item with incomplete data — promote it to
+  // QUALIFIED so the routing layer assigns BLOCKED: MISSING_COPY, keeping it visible
+  // in the queue until the team completes the copy.
 
   if (isRepeatedHeaderRow(request.source.headers, request.source.rowValues)) {
     rowQualification.disposition = "SKIPPED_NON_DATA";
@@ -195,38 +227,69 @@ export function normalizeSheetRow(rawRequest: unknown) {
   }
 
   const titleDerivation = deriveTitleFromPlanningFields(planningFields, profile);
-  const operationalStatus = inferContentOperationalStatus({
+  const routingTitle = titleDerivation?.title;
+  const routing = inferContentRouting({
     planning: {
+      title: routingTitle,
       copyEnglish: planningFields.copyEnglish,
       contentDeadline: planningFields.contentDeadline,
+      sourceAssetLink: planningFields.sourceAssetLink,
     },
     sourceMetadata,
   });
+  const operationalStatus = routing.operationalStatus;
 
   if (!titleDerivation) {
     rowQualification.disposition = "REJECTED_INVALID";
     rowQualification.reasons.push("Unable to derive a title from the configured field order.");
   }
 
-  const hasTitle = hasNonEmptyText(planningFields.campaignLabel) || rowQualification.signals.hasTitle;
-  const hasCopy = hasNonEmptyText(planningFields.copyEnglish);
+  const hasTitle = hasNonEmptyText(planningFields.campaignLabel) || Boolean(routingTitle);
+  const hasCopy = hasRealCopy(planningFields.copyEnglish);
+  const hasPublishedSignal = hasNonEmptyText(sourceMetadata.publishedFlag);
+  const hasOperationalIdentity =
+    hasNonEmptyText(planningFields.campaignLabel) ||
+    hasImageLink(planningFields.sourceAssetLink) ||
+    hasPublishedSignal;
   const hasSchedulingSignal =
     hasNonEmptyText(planningFields.plannedDate) ||
     hasNonEmptyText(planningFields.contentDeadline) ||
-    hasNonEmptyText(planningFields.platformLabel) ||
-    hasNonEmptyText(planningFields.sourceAssetLink);
+    hasNonEmptyText(planningFields.sourceAssetLink) ||
+    hasPublishedSignal;
 
-  if (rowQualification.disposition === "QUALIFIED" && !hasTitle && !hasCopy) {
+  if (
+    rowQualification.disposition === "REJECTED_INVALID" &&
+    rowQualification.reasons.some((reason) => reason.includes("Missing required planning fields")) &&
+    hasOperationalIdentity &&
+    hasSchedulingSignal
+  ) {
+    rowQualification.disposition = "QUALIFIED";
+    rowQualification.confidence = "LOW";
+    rowQualification.reasons = [
+      "Promoted from rejected: has operational spreadsheet signals but is missing LinkedIn copy. Will route as BLOCKED.",
+    ];
+  }
+
+  if (rowQualification.disposition === "QUALIFIED" && !hasTitle && !hasCopy && !hasPublishedSignal) {
     rowQualification.disposition = "SKIPPED_NON_DATA";
     rowQualification.confidence = "HIGH";
-    rowQualification.reasons = ["Row has no title/idea and no copy, so it was skipped."];
+    rowQualification.reasons = ["Row has no operational title, published signal, or real LinkedIn copy, so it was skipped."];
   }
+
+  if (rowQualification.disposition === "QUALIFIED" && routing.blockReason) {
+    rowQualification.reasons.push(`Blocked: ${routing.blockReason}.`);
+  }
+
+  rowQualification.signals.hasTitle = Boolean(routingTitle);
+  rowQualification.signals.hasCopy = hasCopy;
+  rowQualification.signals.hasLink = hasImageLink(planningFields.sourceAssetLink);
+  rowQualification.isPublishedRow = operationalStatus === "POSTED";
 
   if (rowQualification.disposition === "QUALIFIED" && !hasSchedulingSignal) {
     rowQualification.disposition = "REJECTED_INVALID";
     rowQualification.confidence = "LOW";
     rowQualification.reasons.push(
-      "Row needs at least one operational signal: planned date, deadline, channel/source.",
+      "Row needs at least one operational signal: date, content deadline, image link, or published marker.",
     );
   }
 
@@ -245,7 +308,10 @@ export function normalizeSheetRow(rawRequest: unknown) {
       rowId: request.source.rowId,
       rowNumber: request.source.rowNumber,
       rowVersion: request.source.rowVersion,
-      rawRow: rowMap,
+      rawRow: buildOperationalRawRow({
+        ...planningFields,
+        publishedFlag: sourceMetadata.publishedFlag,
+      }),
     },
     normalization: {
       sheetProfileKey: profile.key,
@@ -275,6 +341,7 @@ export function normalizeSheetRow(rawRequest: unknown) {
       preferredDesignProvider: request.workflow.preferredDesignProvider,
       reimportStrategy: request.workflow.reimportStrategy,
       operationalStatus,
+      blockReason: routing.blockReason,
     },
     content: {
       canonicalKey: buildCanonicalKey(request),

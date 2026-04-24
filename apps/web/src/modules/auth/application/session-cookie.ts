@@ -1,5 +1,5 @@
 import { jwtVerify } from "jose";
-import { AUTHORIZED_EMAIL_DOMAIN } from "@/shared/config/env";
+import { AUTHORIZED_EMAIL_DOMAIN, env } from "@/shared/config/env";
 
 export const MIH_SESSION_COOKIE_NAME = "mih_session";
 
@@ -9,7 +9,7 @@ export type VerifiedMihSession = {
 };
 
 function getSessionSecretBytes() {
-  return new TextEncoder().encode(process.env.NEXTAUTH_SECRET ?? "default-local-secret-for-dev");
+  return new TextEncoder().encode(env.NEXTAUTH_SECRET);
 }
 
 function isAuthorizedDomain(email: string) {

@@ -57,7 +57,6 @@ import {
 function qualifiedAi(overrides: Partial<AiSemanticFlags> = {}): AiSemanticFlags {
   return {
     is_empty_or_unusable: false,
-    has_editorial_brief: false,
     has_title: false,
     has_final_copy: false,
     is_published: false,
@@ -68,7 +67,6 @@ function qualifiedAi(overrides: Partial<AiSemanticFlags> = {}): AiSemanticFlags 
 function emptyAi(): AiSemanticFlags {
   return {
     is_empty_or_unusable: true,
-    has_editorial_brief: false,
     has_title: false,
     has_final_copy: false,
     is_published: false,
@@ -89,13 +87,13 @@ function extractDet(worksheet: typeof yannWorksheet, rowIndex: number): Workshee
 describe("Fixture: Yann-style LinkedIn + Substack worksheet", () => {
   const colMap = buildWorksheetColumnMap(yannWorksheet.detectedHeaders);
 
-  it("maps all 7 canonical columns correctly from Yann headers", () => {
+  it("maps the 5 operational columns from Yann headers — brief and platform are not mapped", () => {
     expect(colMap.plannedDate).toBe(0);
     expect(colMap.title).toBe(1);
-    expect(colMap.brief).toBe(2);
+    // index 2 = "Copywriter Brief" — not an operational field
     expect(colMap.linkedinCopy).toBe(3);
     expect(colMap.publishedFlag).toBe(4);
-    expect(colMap.platformLabel).toBe(5);
+    // index 5 = "Platform" — not an operational field
     expect(colMap.contentDeadline).toBe(6);
   });
 
@@ -107,7 +105,6 @@ describe("Fixture: Yann-style LinkedIn + Substack worksheet", () => {
       // For real rows the AI would mark at least one positive flag.
       const ai = expectation.shouldQualify
         ? qualifiedAi({
-            has_editorial_brief: Boolean(det.brief),
             has_final_copy: Boolean(det.linkedinCopy),
             is_published: expectation.publishedPath,
           })
@@ -122,12 +119,13 @@ describe("Fixture: Yann-style LinkedIn + Substack worksheet", () => {
     expect(normalizeBooleanish(det.publishedFlag)).toBe(true);
   });
 
-  it("Substack teaser row: date + brief present → qualifies even if AI marks non-linkedin", () => {
-    const det = extractDet(yannWorksheet, 2); // Substack row
-    // Simulate AI flagging is_non_linkedin_platform = true (but isRowQueueCandidate ignores that)
-    const ai = qualifiedAi({ has_editorial_brief: true });
+  it("Substack teaser row: qualifies via operational Title column — brief column is ignored", () => {
+    const det = extractDet(yannWorksheet, 2); // Substack row — has "Newsletter: Q1 Retrospective" in Title
+    const ai = qualifiedAi({ has_title: true });
     expect(det.plannedDate).toBe("2025-04-14");
-    expect(det.brief).toBeTruthy();
+    expect(det.title).toBe("Newsletter: Q1 Retrospective");
+    // brief column is not mapped — does not contribute to qualification
+    expect((det as Record<string, unknown>).brief).toBeUndefined();
     expect(isRowQueueCandidate(ai, det)).toBe(true);
   });
 });
@@ -147,8 +145,10 @@ describe("Fixture: Matt-style worksheet (alternative header aliases)", () => {
     expect(colMap.title).toBe(1);
   });
 
-  it("maps 'Topic' → brief", () => {
-    expect(colMap.brief).toBe(2);
+  it("'Topic' and 'Channel' are not operational fields — must not be mapped", () => {
+    // Topic and Platform are non-operational; only operational columns are recognised
+    expect((colMap as Record<string, unknown>).topic).toBeUndefined();
+    expect((colMap as Record<string, unknown>).platformLabel).toBeUndefined();
   });
 
   it("maps 'Copy (EN)' → linkedinCopy", () => {
@@ -159,12 +159,8 @@ describe("Fixture: Matt-style worksheet (alternative header aliases)", () => {
     expect(colMap.publishedFlag).toBe(4);
   });
 
-  it("maps 'Channel' → platformLabel", () => {
-    expect(colMap.platformLabel).toBe(5);
-  });
-
-  it("maps 'Link to the post' → publishedPostUrl", () => {
-    expect(colMap.publishedPostUrl).toBe(6);
+  it("'Link to the post' is not an operational field — must not be mapped", () => {
+    expect((colMap as Record<string, unknown>).publishedPostUrl).toBeUndefined();
   });
 
   for (const expectation of mattFixtureExpectations) {
@@ -172,7 +168,6 @@ describe("Fixture: Matt-style worksheet (alternative header aliases)", () => {
       const det = extractDet(mattWorksheet, expectation.rowIndex);
       const ai = expectation.shouldQualify
         ? qualifiedAi({
-            has_editorial_brief: Boolean(det.brief),
             has_final_copy: Boolean(det.linkedinCopy),
             is_published: expectation.publishedPath,
           })
@@ -181,10 +176,13 @@ describe("Fixture: Matt-style worksheet (alternative header aliases)", () => {
     });
   }
 
-  it("published-via-URL row: publishedPostUrl present → published path", () => {
-    const det = extractDet(mattWorksheet, 2); // "April AI Digest" with post URL
-    // The post URL being present is what signals PUBLISHED
-    expect(det.publishedPostUrl).toContain("linkedin.com");
+  it("published-via-URL row: publishedPostUrl column is not operational — qualification via publishedFlag only", () => {
+    // The "Link to the post" column is no longer extracted; the row at index 2 has
+    // empty publishedFlag ("") and qualifies only via title + copy.
+    const det = extractDet(mattWorksheet, 2);
+    expect((det as Record<string, unknown>).publishedPostUrl).toBeUndefined();
+    expect(det.title).toBe("April AI Digest");
+    expect(det.linkedinCopy).toBeTruthy();
   });
 });
 
@@ -195,28 +193,27 @@ describe("Fixture: Matt-style worksheet (alternative header aliases)", () => {
 describe("Fixture: Noisy columns worksheet (extra unknown columns between known ones)", () => {
   const colMap = buildWorksheetColumnMap(noisyColsWorksheet.detectedHeaders);
 
-  it("maps canonical fields at their shifted positions, ignoring unknown columns", () => {
+  it("maps operational fields at their shifted positions, ignoring non-operational and unknown columns", () => {
     expect(colMap.plannedDate).toBe(noisyColsExpectedColMap.plannedDate);
     expect(colMap.title).toBe(noisyColsExpectedColMap.title);
-    expect(colMap.brief).toBe(noisyColsExpectedColMap.brief);
+    // brief and platformLabel are no longer operational fields
     expect(colMap.linkedinCopy).toBe(noisyColsExpectedColMap.linkedinCopy);
     expect(colMap.publishedFlag).toBe(noisyColsExpectedColMap.publishedFlag);
-    expect(colMap.platformLabel).toBe(noisyColsExpectedColMap.platformLabel);
   });
 
-  it("does not map unknown columns 'Internal Notes' or 'Designer'", () => {
-    // The colMap should only have the 6 known fields — no extra keys
-    const mappedFieldCount = Object.keys(colMap).length;
-    expect(mappedFieldCount).toBe(6);
+  it("does not map non-operational or unknown columns", () => {
+    // Only operational fields: plannedDate, title, linkedinCopy, publishedFlag, sourceAssetLink, contentDeadline
+    const mappedKeys = Object.keys(colMap);
+    expect(mappedKeys).not.toContain("brief");
+    expect(mappedKeys).not.toContain("platformLabel");
   });
 
-  it("row 1: extracts correct values from shifted column positions", () => {
+  it("row 1: extracts correct operational values from shifted column positions", () => {
     const det = extractDet(noisyColsWorksheet, 1);
     expect(det.plannedDate).toBe("2025-06-02");
     expect(det.title).toBe("The Future of Remote Work");
-    expect(det.brief).toBe("Cover 3 trends: async, distributed teams, AI tooling.");
+    // brief and platformLabel are no longer extracted
     expect(det.linkedinCopy).toContain("Remote isn't going away");
-    expect(det.platformLabel).toBe("LinkedIn");
   });
 
   it("row 1: does NOT bleed 'Internal Notes' or 'Designer' values into any field", () => {
@@ -231,7 +228,6 @@ describe("Fixture: Noisy columns worksheet (extra unknown columns between known 
     it(`row ${expectation.rowIndex} ("${expectation.label}"): qualifies correctly`, () => {
       const det = extractDet(noisyColsWorksheet, expectation.rowIndex);
       const ai = qualifiedAi({
-        has_editorial_brief: Boolean(det.brief),
         has_final_copy: Boolean(det.linkedinCopy),
       });
       expect(isRowQueueCandidate(ai, det)).toBe(expectation.shouldQualify);
@@ -278,7 +274,6 @@ describe("Fixture: Legacy worksheet (multi-line cell title+brief fallback)", () 
     // Only "Date" column maps; the multi-line column is "" (unmappable)
     expect(det.plannedDate).toBe("2025-03-24");
     expect(det.title).toBeUndefined();
-    expect(det.brief).toBeUndefined();
     expect(det.linkedinCopy).toBeUndefined();
   });
 
@@ -326,7 +321,7 @@ describe("Fixture: X Account worksheet — worksheet-level exclusion", () => {
     const colMap = buildWorksheetColumnMap(xHeaders);
     const xRow = ["2025-04-14", "Weekly AI Roundup", "5 stories you need to know this week.", "No", "X"];
     const det = extractColumnarRowFields(colMap, xRow);
-    const ai = qualifiedAi({ has_editorial_brief: true, has_title: true });
+    const ai = qualifiedAi({ has_title: true });
     // Confirms the danger: row-level qualification would pass the X row
     expect(isRowQueueCandidate(ai, det)).toBe(true);
     // This is WHY isXAccountWorksheet must be called BEFORE any row qualification

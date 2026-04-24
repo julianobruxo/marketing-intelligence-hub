@@ -2,15 +2,7 @@ import { headers, cookies } from "next/headers";
 import { AUTHORIZED_EMAIL_DOMAIN, env } from "@/shared/config/env";
 import { MIH_SESSION_COOKIE_NAME, verifyMihSessionCookie } from "../application/session-cookie";
 import type { UserSession } from "../domain/session";
-
-function normalizeGoogleEmail(rawValue: string | null) {
-  if (!rawValue) {
-    return null;
-  }
-
-  const normalized = rawValue.includes(":") ? rawValue.split(":").at(-1) : rawValue;
-  return normalized?.trim().toLowerCase() ?? null;
-}
+import { verifyGoogleIapJwtAssertion } from "./google-jwt-verifier";
 
 function isAuthorizedDomain(email: string) {
   return email.endsWith(`@${AUTHORIZED_EMAIL_DOMAIN}`);
@@ -18,16 +10,32 @@ function isAuthorizedDomain(email: string) {
 
 export async function getRequestIdentity(): Promise<UserSession | null> {
   const requestHeaders = await headers();
-  const iapEmail = normalizeGoogleEmail(
-    requestHeaders.get("x-goog-authenticated-user-email"),
-  );
+  const iapAudience = env.IAP_AUDIENCE?.trim();
 
-  if (iapEmail && isAuthorizedDomain(iapEmail)) {
-    return {
-      email: iapEmail,
-      roles: [],
-      mode: "iap",
-    };
+  if (iapAudience) {
+    const iapJwt = requestHeaders.get("x-goog-iap-jwt-assertion");
+    if (!iapJwt) {
+      console.warn("[auth/session-source] missing IAP assertion");
+      return null;
+    }
+
+    try {
+      const verifiedIap = await verifyGoogleIapJwtAssertion(iapJwt, iapAudience);
+      if (!isAuthorizedDomain(verifiedIap.email)) {
+        return null;
+      }
+
+      return {
+        email: verifiedIap.email,
+        roles: [],
+        mode: "iap",
+      };
+    } catch (error) {
+      console.warn("[auth/session-source] IAP identity rejected", {
+        reason: error instanceof Error ? error.message : "unknown",
+      });
+      return null;
+    }
   }
 
   const cookieStore = await cookies();

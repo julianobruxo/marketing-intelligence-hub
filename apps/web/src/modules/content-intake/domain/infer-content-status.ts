@@ -1,23 +1,36 @@
 import { z } from "zod";
 
 export const operationalContentStatusSchema = z.enum([
+  "BLOCKED",
   "WAITING_FOR_COPY",
   "LATE",
   "READY_FOR_DESIGN",
+  "READY_TO_PUBLISH",
+  "POSTED",
   "PUBLISHED",
 ]);
 
 export type OperationalContentStatus = z.infer<typeof operationalContentStatusSchema>;
 
+export const workflowBlockReasonSchema = z.enum(["MISSING_TITLE", "MISSING_COPY"]);
+
+export type WorkflowBlockReason = z.infer<typeof workflowBlockReasonSchema>;
+
 type OperationalStatusInput = {
   planning?: {
+    title?: string;
     copyEnglish?: string;
     contentDeadline?: string;
+    sourceAssetLink?: string;
   };
   sourceMetadata?: {
     publishedFlag?: string | boolean;
-    publishedPostUrl?: string;
   };
+};
+
+export type ContentRoutingDecision = {
+  operationalStatus: OperationalContentStatus;
+  blockReason?: WorkflowBlockReason;
 };
 
 function normalizeBooleanish(value: string | boolean | undefined | null) {
@@ -41,30 +54,15 @@ function normalizeBooleanish(value: string | boolean | undefined | null) {
   );
 }
 
-function parseDateOnlyOrTimestamp(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    const [year, month, day] = trimmed.split("-").map((part) => Number.parseInt(part, 10));
-    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-      return null;
-    }
-
-    const parsed = new Date(year, month - 1, day);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-
-  const parsed = new Date(trimmed);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+export function hasRealCopy(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return value.trim().length > 0;
 }
 
-function startOfToday() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return today;
+export function hasImageLink(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  return trimmed.startsWith("http") || trimmed.startsWith("https");
 }
 
 function toStatusValue(value: unknown): OperationalContentStatus | null {
@@ -76,28 +74,32 @@ function toStatusValue(value: unknown): OperationalContentStatus | null {
   return parsed.success ? parsed.data : null;
 }
 
-export function inferContentOperationalStatus(input: OperationalStatusInput): OperationalContentStatus {
+export function inferContentRouting(input: OperationalStatusInput): ContentRoutingDecision {
   if (
-    normalizeBooleanish(input.sourceMetadata?.publishedFlag) ||
-    Boolean(input.sourceMetadata?.publishedPostUrl)
+    normalizeBooleanish(input.sourceMetadata?.publishedFlag)
   ) {
-    return "PUBLISHED";
+    return { operationalStatus: "POSTED" };
+  }
+
+  const title = input.planning?.title?.trim() ?? "";
+  if (title.length === 0) {
+    return { operationalStatus: "BLOCKED", blockReason: "MISSING_TITLE" };
   }
 
   const copy = input.planning?.copyEnglish?.trim() ?? "";
-  if (copy.length === 0) {
-    return "WAITING_FOR_COPY";
+  if (!hasRealCopy(copy)) {
+    return { operationalStatus: "BLOCKED", blockReason: "MISSING_COPY" };
   }
 
-  const deadlineValue = input.planning?.contentDeadline?.trim() ?? "";
-  if (deadlineValue.length > 0) {
-    const deadline = parseDateOnlyOrTimestamp(deadlineValue);
-    if (deadline && deadline.getTime() < startOfToday().getTime()) {
-      return "LATE";
-    }
+  if (hasImageLink(input.planning?.sourceAssetLink)) {
+    return { operationalStatus: "READY_TO_PUBLISH" };
   }
 
-  return "READY_FOR_DESIGN";
+  return { operationalStatus: "READY_FOR_DESIGN" };
+}
+
+export function inferContentOperationalStatus(input: OperationalStatusInput): OperationalContentStatus {
+  return inferContentRouting(input).operationalStatus;
 }
 
 export function readOperationalStatusFromPlanningSnapshot(
@@ -120,6 +122,13 @@ export function readOperationalStatusFromPlanningSnapshot(
   const planning = snapshot.planning && typeof snapshot.planning === "object"
     ? (snapshot.planning as Record<string, unknown>)
     : null;
+  const normalization = snapshot.normalization && typeof snapshot.normalization === "object"
+    ? (snapshot.normalization as Record<string, unknown>)
+    : null;
+  const titleDerivation =
+    normalization?.titleDerivation && typeof normalization.titleDerivation === "object"
+      ? (normalization.titleDerivation as Record<string, unknown>)
+      : null;
   const sourceMetadata = snapshot.sourceMetadata && typeof snapshot.sourceMetadata === "object"
     ? (snapshot.sourceMetadata as Record<string, unknown>)
     : null;
@@ -127,17 +136,21 @@ export function readOperationalStatusFromPlanningSnapshot(
   return inferContentOperationalStatus({
     planning: planning
       ? {
+          title:
+            typeof titleDerivation?.title === "string"
+              ? titleDerivation.title
+              : typeof planning.campaignLabel === "string"
+                ? planning.campaignLabel
+                : undefined,
           copyEnglish: typeof planning.copyEnglish === "string" ? planning.copyEnglish : undefined,
           contentDeadline: typeof planning.contentDeadline === "string" ? planning.contentDeadline : undefined,
+          sourceAssetLink:
+            typeof planning.sourceAssetLink === "string" ? planning.sourceAssetLink : undefined,
         }
       : undefined,
     sourceMetadata: sourceMetadata
       ? {
-          publishedFlag: sourceMetadata.publishedFlag as string | boolean | undefined,
-          publishedPostUrl:
-            typeof sourceMetadata.publishedPostUrl === "string"
-              ? sourceMetadata.publishedPostUrl
-              : undefined,
+        publishedFlag: sourceMetadata.publishedFlag as string | boolean | undefined,
         }
       : undefined,
   });

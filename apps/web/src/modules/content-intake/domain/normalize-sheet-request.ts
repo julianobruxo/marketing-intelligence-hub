@@ -43,7 +43,7 @@ export const normalizeSheetRowRequestSchema = z.object({
   workflow: z.object({
     translationRequired: z.boolean().default(false),
     autoPostEnabled: z.boolean().default(false),
-    preferredDesignProvider: z.enum(["CANVA", "AI_VISUAL", "MANUAL"]).default("CANVA"),
+    preferredDesignProvider: z.enum(["CANVA", "GPT_IMAGE", "AI_VISUAL", "MANUAL"]).default("CANVA"),
     reimportStrategy: z.enum(["UPDATE", "REPLACE", "KEEP_AS_IS"]).default("UPDATE"),
     equivalenceTargetContentItemId: z.string().min(1).optional(),
     conflictConfidence: z.enum(["HIGH_CONFIDENCE_DUPLICATE", "POSSIBLE_DUPLICATE", "NO_MEANINGFUL_MATCH"]).default(

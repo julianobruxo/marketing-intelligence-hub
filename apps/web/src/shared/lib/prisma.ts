@@ -2,9 +2,6 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { env } from "@/shared/config/env";
 
-require("fs").writeFileSync("prisma-debug.log", "PRISMA MODULE LOADED. env.DIRECT_DATABASE_URL: " + env.DIRECT_DATABASE_URL + "\n", { flag: "a" });
-
-
 const globalForPrisma = globalThis as {
   prisma?: PrismaClient;
 };

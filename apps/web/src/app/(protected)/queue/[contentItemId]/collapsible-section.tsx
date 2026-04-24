@@ -9,6 +9,7 @@ interface CollapsibleSectionProps {
   badge?: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  buttonTestId?: string;
 }
 
 export function CollapsibleSection({
@@ -16,6 +17,7 @@ export function CollapsibleSection({
   badge,
   children,
   defaultOpen = false,
+  buttonTestId,
 }: CollapsibleSectionProps) {
   const [open, setOpen] = useState(defaultOpen);
 
@@ -25,6 +27,7 @@ export function CollapsibleSection({
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         className="flex w-full items-center justify-between gap-3 px-5 py-3.5 text-left transition-default hover:bg-white/50 dark:hover:bg-[rgba(99,102,241,0.08)]"
+        data-testid={buttonTestId}
       >
         <div className="flex items-center gap-2.5">
           <span className="text-sm font-medium text-[#1F2E57] dark:text-slate-100">

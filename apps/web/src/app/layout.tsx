@@ -31,18 +31,11 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <head>
-        {/* Blocking script prevents dark-mode FOUC — runs before first paint */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('mih-theme');if(t==='dark')document.documentElement.classList.add('dark');}catch(e){}})();`,
-          }}
-        />
-      </head>
-      <body className="min-h-full flex flex-col" style={{ backgroundColor: "var(--page-bg)", color: "var(--foreground)" }}>
-        <ThemeProvider>
-          {children}
-        </ThemeProvider>
+      <body
+        className="min-h-full flex flex-col"
+        style={{ backgroundColor: "var(--page-bg)", color: "var(--foreground)" }}
+      >
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );
