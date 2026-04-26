@@ -75,6 +75,22 @@ function resolveInitialStatus(payload: ContentIngestionPayload) {
   return ContentStatus.IMPORTED;
 }
 
+function resolveUpdateStatus(
+  persistedStatus: ContentStatus,
+  initialStatus: ContentStatus,
+  shouldResetWorkflow: boolean,
+): ContentStatus | undefined {
+  if (shouldResetWorkflow) return initialStatus;
+  if (
+    (persistedStatus === ContentStatus.BLOCKED ||
+      persistedStatus === ContentStatus.WAITING_FOR_COPY) &&
+    initialStatus === ContentStatus.READY_FOR_DESIGN
+  ) {
+    return ContentStatus.READY_FOR_DESIGN;
+  }
+  return undefined;
+}
+
 function resolveTranslationCopy(payload: ContentIngestionPayload) {
   if (!((payload.workflow.translationRequired ?? payload.content.translationRequired) === true)) {
     return null;
@@ -301,6 +317,13 @@ export async function importContentItem(
     let contentItem;
 
     if (targetContentItemId) {
+      const persistedItem = await tx.contentItem.findUnique({
+        where: { id: targetContentItemId },
+        select: { currentStatus: true },
+      });
+      const persistedStatus = persistedItem?.currentStatus ?? ContentStatus.IMPORTED;
+      const resolvedUpdateStatus = resolveUpdateStatus(persistedStatus, initialStatus, shouldResetWorkflow);
+
       contentItem = await tx.contentItem.update({
         where: { id: targetContentItemId },
         data: {
@@ -317,12 +340,23 @@ export async function importContentItem(
           translationGeneratedAt: translationCopy ? new Date(payload.triggeredAt) : undefined,
           preferredDesignProvider: payload.workflow.preferredDesignProvider as DesignProvider,
           autopostEnabled: payload.workflow.autoPostEnabled,
-          currentStatus: shouldResetWorkflow ? initialStatus : undefined,
+          currentStatus: resolvedUpdateStatus,
           deletedAt: null,
           planningSnapshot: payloadJson,
           latestImportAt: new Date(payload.triggeredAt),
         },
       });
+
+      if (resolvedUpdateStatus !== undefined && resolvedUpdateStatus !== persistedStatus) {
+        await tx.statusEvent.create({
+          data: {
+            contentItemId: contentItem.id,
+            fromStatus: persistedStatus,
+            toStatus: resolvedUpdateStatus,
+            note: `Status advanced from ${persistedStatus} to ${resolvedUpdateStatus} on reimport: source content now qualifies for design.`,
+          },
+        });
+      }
 
       if (sourceLink) {
         await tx.contentSourceLink.updateMany({

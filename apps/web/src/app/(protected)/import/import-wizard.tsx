@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { MetricCard } from "@/shared/ui/metric-card";
 import { StatusBadge } from "@/shared/ui/status-badge";
 import { WorkflowStepper } from "@/shared/ui/workflow-stepper";
+import { useTheme } from "@/shared/ui/theme-provider";
 import { DRIVE_IMPORT_FOLDER_NAME, DRIVE_IMPORT_KEYWORD, DRIVE_IMPORT_PAGE_SIZE } from "@/modules/content-intake/domain/drive-import";
 import {
   type DriveSourceGroup,
@@ -335,6 +336,9 @@ function ConfirmModal({
   onConfirm: () => void;
   confirming: boolean;
 }) {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+
   useEffect(() => {
     if (!open) {
       return;
@@ -356,7 +360,8 @@ function ConfirmModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm dark:bg-slate-950/72"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
+      style={isDark ? { background: "rgba(6,5,15,0.75)", backdropFilter: "blur(6px)" } : undefined}
       onClick={onCancel}
       role="presentation"
     >
@@ -364,16 +369,34 @@ function ConfirmModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-confirm-title"
-        className="w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.98),rgba(10,14,31,0.94))]"
+        className="w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
+        style={isDark ? {
+          background: "linear-gradient(145deg, #1a1736 0%, #13112a 60%, #0f0d20 100%)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: "18px",
+          boxShadow: "0 8px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(124,92,252,0.08)",
+        } : undefined}
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Confirm import</p>
-            <h2 id="import-confirm-title" className="mt-1 text-xl font-semibold text-slate-950 dark:text-slate-100">
+            <p
+              className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400"
+              style={isDark ? { color: "rgba(255,255,255,0.35)", fontSize: "0.65rem", letterSpacing: "0.12em" } : undefined}
+            >
+              Confirm import
+            </p>
+            <h2
+              id="import-confirm-title"
+              className="mt-1 text-xl font-semibold text-slate-950"
+              style={isDark ? { color: "#a78bfa", fontWeight: 700, fontSize: "1.4rem" } : undefined}
+            >
               Stage selected spreadsheets
             </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-[#95A7CB]">
+            <p
+              className="mt-2 text-sm leading-6 text-slate-500"
+              style={isDark ? { color: "rgba(255,255,255,0.55)", fontSize: "0.88rem", lineHeight: 1.6 } : undefined}
+            >
               The platform will inspect the selected spreadsheets, auto-pick valid worksheets, normalize their rows,
               and store the results in staging before queue ingestion.
             </p>
@@ -382,7 +405,7 @@ function ConfirmModal({
           <button
             type="button"
             onClick={onCancel}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-default hover:border-slate-400 hover:text-slate-900 dark:border-[rgba(88,108,186,0.3)] dark:text-[#95A7CB] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:text-slate-100"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-default hover:border-slate-400 hover:text-slate-900 dark:rounded-[8px] dark:border-[rgba(255,255,255,0.1)] dark:bg-[rgba(255,255,255,0.06)] dark:text-[rgba(255,255,255,0.5)] dark:hover:bg-[rgba(255,255,255,0.12)] dark:hover:text-white"
             aria-label="Close modal"
           >
             <X className="h-4 w-4" />
@@ -391,15 +414,44 @@ function ConfirmModal({
 
         <div className="mt-5 space-y-3">
           {selectedRecords.map((record) => (
-            <div key={record.driveFileId} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(23,31,58,0.74)]">
+            <div
+              key={record.driveFileId}
+              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+              style={isDark ? {
+                background: "linear-gradient(135deg, rgba(42,36,80,0.9) 0%, rgba(30,26,60,0.7) 100%)",
+                border: "1px solid rgba(255,255,255,0.07)",
+                borderRadius: "12px",
+                boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+              } : undefined}
+            >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold text-slate-950 dark:text-slate-100">{record.spreadsheetName}</p>
-                  <p className="mt-1 text-sm text-slate-500 dark:text-[#95A7CB]">
+                  <p
+                    className="text-sm font-semibold text-slate-950"
+                    style={isDark ? { color: "#ffffff", fontWeight: 600, fontSize: "0.95rem" } : undefined}
+                  >
+                    {record.spreadsheetName}
+                  </p>
+                  <p
+                    className="mt-1 text-sm text-slate-500"
+                    style={isDark ? { color: "rgba(255,255,255,0.45)", fontSize: "0.82rem" } : undefined}
+                  >
                     {extractOwnerFromSpreadsheetName(record.spreadsheetName) ?? record.sourceContext.owner}
                   </p>
                 </div>
-                <Badge variant="outline" className="border-slate-200 bg-white text-[11px] text-slate-600 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(18,26,51,0.8)] dark:text-[#A8B7DA]">
+                <Badge
+                  variant="outline"
+                  className="border-slate-200 bg-white text-[11px] text-slate-600"
+                  style={isDark ? {
+                    background: "rgba(52,211,153,0.12)",
+                    border: "1px solid rgba(52,211,153,0.3)",
+                    color: "#34d399",
+                    fontSize: "0.72rem",
+                    fontWeight: 500,
+                    borderRadius: "999px",
+                    padding: "3px 10px",
+                  } : undefined}
+                >
                   {record.worksheets.length > 0 ? `${record.worksheets.length} tabs` : "Auto-detected"}
                 </Badge>
               </div>
@@ -407,8 +459,20 @@ function ConfirmModal({
           ))}
         </div>
 
-        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(23,31,58,0.74)]">
-          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">Reimport strategy</p>
+        <div
+          className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4"
+          style={isDark ? {
+            background: "linear-gradient(135deg, rgba(28,24,55,0.95) 0%, rgba(20,18,42,0.9) 100%)",
+            border: "1px solid rgba(255,255,255,0.06)",
+            borderRadius: "12px",
+          } : undefined}
+        >
+          <p
+            className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400"
+            style={isDark ? { color: "rgba(255,255,255,0.35)", fontSize: "0.65rem", letterSpacing: "0.12em" } : undefined}
+          >
+            Reimport strategy
+          </p>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             {(["UPDATE", "REPLACE", "KEEP_AS_IS"] as const).map((option) => {
               const active = reimportStrategy === option;
@@ -419,13 +483,31 @@ function ConfirmModal({
                   onClick={() => onStrategyChange(option)}
                   className={cn(
                     "rounded-2xl border px-3 py-3 text-left text-sm transition-default",
-                    active
-                      ? "border-slate-950 bg-white text-slate-950 shadow-sm dark:border-[rgba(132,144,226,0.58)] dark:bg-[rgba(17,25,50,0.9)] dark:text-slate-100"
-                      : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(18,26,51,0.72)] dark:text-[#95A7CB] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:bg-[rgba(22,30,58,0.84)]",
+                    !isDark && (active
+                      ? "border-slate-950 bg-white text-slate-950 shadow-sm"
+                      : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"),
                   )}
+                  style={isDark ? (active ? {
+                    background: "linear-gradient(135deg, rgba(88,60,180,0.35) 0%, rgba(60,40,140,0.25) 100%)",
+                    border: "1px solid rgba(124,92,252,0.4)",
+                    boxShadow: "0 0 16px rgba(124,92,252,0.2)",
+                    borderRadius: "10px",
+                  } : {
+                    background: "linear-gradient(135deg, rgba(38,32,72,0.8) 0%, rgba(30,26,58,0.6) 100%)",
+                    border: "1px solid rgba(255,255,255,0.07)",
+                    borderRadius: "10px",
+                  }) : undefined}
                 >
-                  <p className="font-semibold">{getReimportStrategyLabel(option)}</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-[#95A7CB]">
+                  <p
+                    className="font-semibold"
+                    style={isDark ? { color: "#ffffff", fontSize: "0.9rem" } : undefined}
+                  >
+                    {getReimportStrategyLabel(option)}
+                  </p>
+                  <p
+                    className="mt-1 text-xs leading-5 text-slate-500"
+                    style={isDark ? { color: "rgba(255,255,255,0.45)", fontSize: "0.8rem", lineHeight: 1.5 } : undefined}
+                  >
                     {option === "UPDATE"
                       ? "Bring in the latest spreadsheet changes without discarding the workflow history already built here."
                       : option === "REPLACE"
@@ -439,7 +521,10 @@ function ConfirmModal({
         </div>
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-slate-500 dark:text-[#95A7CB]">
+          <p
+            className="text-sm text-slate-500"
+            style={isDark ? { color: "rgba(255,255,255,0.4)", fontSize: "0.82rem" } : undefined}
+          >
             The selected spreadsheets will be staged first. Valid rows enter the Workflow Queue only after the next
             confirmation step.
           </p>
@@ -448,7 +533,7 @@ function ConfirmModal({
               type="button"
               variant="outline"
               onClick={onCancel}
-              className="border-slate-300 text-slate-700 hover:bg-slate-50 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100 dark:hover:bg-[rgba(29,37,68,0.95)]"
+              className="border-slate-300 text-slate-700 hover:bg-slate-50 dark:rounded-[10px] dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(255,255,255,0.07)] dark:font-medium dark:text-[rgba(255,255,255,0.7)] dark:hover:bg-[rgba(255,255,255,0.12)]"
             >
               Cancel
             </Button>
@@ -456,9 +541,16 @@ function ConfirmModal({
               type="button"
               onClick={onConfirm}
               disabled={confirming}
-              className="transition-default disabled:opacity-50"
+              className="transition-default disabled:opacity-50 dark:hover:brightness-110"
               data-testid="import-button"
-              style={{ backgroundColor: "#E8584A", color: "white" }}
+              style={isDark ? {
+                background: "linear-gradient(135deg, #7c5cfc 0%, #9b6dff 100%)",
+                color: "white",
+                border: "none",
+                borderRadius: "10px",
+                fontWeight: 600,
+                boxShadow: "0 4px 16px rgba(124,92,252,0.4)",
+              } : { backgroundColor: "#E8584A", color: "white" }}
             >
               {confirming ? (
                 <>
@@ -909,7 +1001,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
   return (
     <>
       <div className="space-y-8 import-theme">
-        <section className="app-surface-panel relative overflow-hidden rounded-[34px] px-6 py-6 sm:px-8 sm:py-8 dark:border-[rgba(88,108,186,0.36)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+        <section className="app-surface-panel relative overflow-hidden rounded-[34px] px-6 py-6 sm:px-8 sm:py-8">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(232,88,74,0.12),_transparent_36%),radial-gradient(circle_at_bottom_left,_rgba(10,102,194,0.08),_transparent_34%)]" />
           <div className="relative grid gap-8 xl:grid-cols-[minmax(0,1.35fr)_320px] xl:items-start">
             <div className="space-y-6">
@@ -1035,7 +1127,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
           </div>
         </section>
 
-        <section className="app-surface-panel rounded-[28px] px-5 py-4 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+        <section className="app-surface-panel rounded-[28px] px-5 py-4">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="Detected" value={detectedRows} detail="Rows seen in staged sheets" />
             <MetricCard label="Queued" value={queuedRows} detail="Rows already in workflow" tone="progress" />
@@ -1044,7 +1136,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
           </div>
         </section>
 
-        <section className="app-surface-panel space-y-5 rounded-[30px] px-5 py-5 sm:px-6 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+        <section className="app-surface-panel space-y-5 rounded-[30px] px-5 py-5 sm:px-6">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
               <SectionHeading>Discovery</SectionHeading>
@@ -1223,7 +1315,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
           ) : null}
         </section>
 
-        <section className="app-surface-panel space-y-5 rounded-[30px] px-5 py-5 sm:px-6 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]" data-testid="staging-results">
+        <section className="app-surface-panel space-y-5 rounded-[30px] px-5 py-5 sm:px-6" data-testid="staging-results">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
               <SectionHeading>Staging & send</SectionHeading>
@@ -1234,23 +1326,31 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
             </div>
             <div className="flex flex-col items-start gap-2 lg:items-end">
               <p className="text-sm text-slate-500 dark:text-[#95A7CB]">Only validated rows will be sent.</p>
-              <Button
-                type="button"
-                onClick={() => void sendSelectedToWorkflowQueue()}
-                disabled={selectedStagedIds.size === 0 || isSending}
-                data-testid="send-to-workflow-queue-button"
-                className="h-12 rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 disabled:opacity-50"
-                style={{ backgroundColor: "#E8584A", color: "white" }}
-              >
-                {isSending ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                    Sending...
-                  </>
-                ) : (
-                  "Send to Workflow Queue"
-                )}
-              </Button>
+              <div className="flex items-center gap-[10px]">
+                <Link
+                  href="/queue"
+                  className="inline-flex h-12 items-center rounded-[10px] border px-5 text-sm font-medium transition-default border-[rgba(0,0,0,0.12)] bg-white text-[#374151] hover:border-[rgba(0,0,0,0.2)] hover:bg-[#f9fafb] dark:border-[rgba(255,255,255,0.15)] dark:bg-[rgba(255,255,255,0.07)] dark:text-[rgba(255,255,255,0.85)] dark:hover:border-[rgba(255,255,255,0.25)] dark:hover:bg-[rgba(255,255,255,0.13)] dark:hover:text-white"
+                >
+                  Open Queue
+                </Link>
+                <Button
+                  type="button"
+                  onClick={() => void sendSelectedToWorkflowQueue()}
+                  disabled={selectedStagedIds.size === 0 || isSending}
+                  data-testid="send-to-workflow-queue-button"
+                  className="h-12 rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 disabled:opacity-50"
+                  style={{ backgroundColor: "#E8584A", color: "white" }}
+                >
+                  {isSending ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      Sending...
+                    </>
+                  ) : (
+                    "Send to Workflow Queue"
+                  )}
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -1290,7 +1390,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
           </div>
         </section>
 
-        <section className="app-surface-panel rounded-[26px] px-5 py-4 dark:border-[rgba(88,108,186,0.34)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+        <section className="app-surface-panel rounded-[26px] px-5 py-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <SectionHeading>Activity</SectionHeading>

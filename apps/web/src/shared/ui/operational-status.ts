@@ -2,19 +2,19 @@ export type OperationalTone = "slate" | "blue" | "amber" | "emerald" | "rose" | 
 
 const TONE_CLASSES: Record<OperationalTone, string> = {
   slate:
-    "border-slate-200/95 bg-[linear-gradient(180deg,rgba(244,247,253,1),rgba(231,237,248,0.96))] text-slate-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(104,120,186,0.42)] dark:bg-[linear-gradient(180deg,rgba(34,42,75,0.94),rgba(23,31,58,0.98))] dark:text-[#C3CFEF]",
+    "border-slate-200/95 bg-[linear-gradient(180deg,rgba(244,247,253,1),rgba(231,237,248,0.96))] text-slate-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.82)] dark:border-[rgba(110,128,200,0.48)] dark:bg-[linear-gradient(180deg,rgba(36,44,80,0.96),rgba(24,32,62,0.98))] dark:text-[#CBD8F4]",
   blue:
-    "border-sky-200/95 bg-[linear-gradient(180deg,rgba(238,247,255,1),rgba(218,231,254,0.98))] text-sky-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(87,132,212,0.48)] dark:bg-[linear-gradient(180deg,rgba(22,40,82,0.94),rgba(18,31,65,0.98))] dark:text-[#BFD4FF]",
+    "border-sky-200/95 bg-[linear-gradient(180deg,rgba(238,247,255,1),rgba(218,231,254,0.98))] text-sky-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(86,150,232,0.58)] dark:bg-[linear-gradient(180deg,rgba(12,34,84,0.96),rgba(9,26,68,0.98))] dark:text-[#C4DCFF]",
   amber:
-    "border-amber-200/95 bg-[linear-gradient(180deg,rgba(255,251,236,1),rgba(254,236,183,0.96))] text-amber-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(191,141,57,0.48)] dark:bg-[linear-gradient(180deg,rgba(62,42,8,0.94),rgba(47,32,6,0.98))] dark:text-[#F1CC88]",
+    "border-amber-200/95 bg-[linear-gradient(180deg,rgba(255,251,236,1),rgba(254,236,183,0.96))] text-amber-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(215,155,42,0.58)] dark:bg-[linear-gradient(180deg,rgba(68,44,6,0.96),rgba(50,32,4,0.98))] dark:text-[#FDCF7A]",
   emerald:
-    "border-emerald-200/95 bg-[linear-gradient(180deg,rgba(236,253,245,1),rgba(198,246,214,0.94))] text-emerald-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(63,177,135,0.48)] dark:bg-[linear-gradient(180deg,rgba(16,48,34,0.94),rgba(11,38,26,0.98))] dark:text-[#9CE6CA]",
+    "border-emerald-200/95 bg-[linear-gradient(180deg,rgba(236,253,245,1),rgba(198,246,214,0.94))] text-emerald-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(52,194,140,0.58)] dark:bg-[linear-gradient(180deg,rgba(8,46,28,0.96),rgba(5,34,18,0.98))] dark:text-[#8DECC6]",
   rose:
-    "border-rose-200/95 bg-[linear-gradient(180deg,rgba(255,241,245,1),rgba(255,224,232,0.98))] text-rose-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(176,74,102,0.52)] dark:bg-[linear-gradient(180deg,rgba(66,14,28,0.95),rgba(52,10,22,0.98))] dark:text-[#F4A7BA]",
+    "border-rose-200/95 bg-[linear-gradient(180deg,rgba(255,241,245,1),rgba(255,224,232,0.98))] text-rose-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-[rgba(200,60,100,0.60)] dark:bg-[linear-gradient(180deg,rgba(74,10,28,0.96),rgba(56,7,20,0.98))] dark:text-[#F8A8BE]",
   violet:
-    "border-violet-200/95 bg-[linear-gradient(180deg,rgba(246,242,255,1),rgba(231,218,255,0.95))] text-violet-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(117,99,196,0.54)] dark:bg-[linear-gradient(180deg,rgba(43,20,86,0.95),rgba(31,15,66,0.98))] dark:text-[#CAB7FF]",
+    "border-violet-200/95 bg-[linear-gradient(180deg,rgba(246,242,255,1),rgba(231,218,255,0.95))] text-violet-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(142,100,220,0.65)] dark:bg-[linear-gradient(180deg,rgba(52,18,100,0.96),rgba(36,12,78,0.98))] dark:text-[#D4BAFF]",
   orange:
-    "border-orange-200/95 bg-[linear-gradient(180deg,rgba(255,247,238,1),rgba(255,223,186,0.96))] text-orange-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(189,118,64,0.5)] dark:bg-[linear-gradient(180deg,rgba(64,32,10,0.95),rgba(49,24,7,0.98))] dark:text-[#F1BF93]",
+    "border-orange-200/95 bg-[linear-gradient(180deg,rgba(255,247,238,1),rgba(255,223,186,0.96))] text-orange-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[rgba(210,120,52,0.58)] dark:bg-[linear-gradient(180deg,rgba(70,30,6,0.96),rgba(52,22,4,0.98))] dark:text-[#F8BE88]",
 };
 
 const DOT_CLASSES: Record<OperationalTone, string> = {

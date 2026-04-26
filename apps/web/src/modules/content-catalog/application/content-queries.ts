@@ -75,6 +75,10 @@ const contentItemDetailArgs = Prisma.validator<Prisma.ContentItemDefaultArgs>()(
       where: { deletedAt: null },
       orderBy: [{ slideIndex: "asc" }, { createdAt: "asc" }],
     },
+    publishAttempts: {
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    },
   },
 });
 

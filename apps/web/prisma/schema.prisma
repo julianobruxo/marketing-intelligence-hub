@@ -158,6 +158,7 @@ enum AssetType {
   STATIC_IMAGE
   CAROUSEL_SLIDE
   EXPORT_PACKAGE
+  VIDEO
 }
 
 enum AssetStatus {
@@ -173,6 +174,12 @@ enum TranslationStatus {
   APPROVED
 }
 
+enum PublishLanguage {
+  ENG
+  PT_BR
+  FR
+}
+
 enum WorksheetSelectionStrategy {
   EXPLICIT_WORKSHEET_ID
   EXACT_WORKSHEET_NAME
@@ -183,6 +190,18 @@ enum TitleDerivationStrategy {
   EXPLICIT_MAPPED_FIELD
   PROFILE_FALLBACK_FIELD
   HEURISTIC_LAST_RESORT
+}
+
+enum PublishAttemptMode {
+  MOCK
+  LINKEDIN_API
+}
+
+enum PublishAttemptStatus {
+  DRAFT
+  CONFIRMED
+  POSTED
+  FAILED
 }
 
 model User {
@@ -246,6 +265,18 @@ model ContentItem {
   sourceLocale        String            @default("en")
   translationStatus   TranslationStatus @default(NOT_REQUIRED)
   translationRequired Boolean           @default(false)
+  // ── Per-language translation (Phase 1) ───────────────────────────────────
+  translationPtBrCopy        String?           @db.Text
+  translationPtBrStatus      TranslationStatus @default(NOT_REQUIRED)
+  translationPtBrRequestedAt DateTime?
+  translationPtBrGeneratedAt DateTime?
+  translationPtBrApprovedAt  DateTime?
+  translationFrCopy          String?           @db.Text
+  translationFrStatus        TranslationStatus @default(NOT_REQUIRED)
+  translationFrRequestedAt   DateTime?
+  translationFrGeneratedAt   DateTime?
+  translationFrApprovedAt    DateTime?
+  selectedPublishLanguage    PublishLanguage?
   preferredDesignProvider DesignProvider?
   autopostEnabled     Boolean           @default(false)
   currentStatus       ContentStatus     @default(IMPORTED)
@@ -261,6 +292,7 @@ model ContentItem {
   statusEvents        StatusEvent[]
   designRequests      DesignRequest[]
   assets              ContentAsset[]
+  publishAttempts     PublishAttempt[]
 }
 
 model ContentSourceLink {
@@ -473,4 +505,32 @@ model SpreadsheetImportRow {
 
   @@unique([batchId, rowId])
   @@index([batchId, rowStatus])
+}
+
+model PublishAttempt {
+  id                      String               @id @default(cuid())
+  contentItemId           String
+  contentItem             ContentItem          @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  mode                    PublishAttemptMode
+  status                  PublishAttemptStatus
+  targetOwnerName         String
+  targetLabel             String
+  targetType              String
+  targetConnectionStatus  String
+  selectedPublishLanguage PublishLanguage
+  copySnapshot            String               @db.Text
+  assetType               AssetType?
+  assetUrl                String?              @db.Text
+  assetSnapshot           Json?
+  linkedinPostUrn         String?
+  linkedinPostUrl         String?
+  createdById             String?
+  confirmedAt             DateTime?
+  postedAt                DateTime?
+  errorMessage            String?
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+
+  @@index([contentItemId])
+  @@index([mode, status])
 }

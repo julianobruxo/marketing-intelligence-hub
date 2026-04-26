@@ -34,20 +34,20 @@ export function UserMenu({ session }: { session: UserSession }) {
     <div className="flex items-center gap-2.5" ref={ref}>
       <button
         aria-label="Search"
-        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-transparent text-[#7194C8] transition-default hover:border-sky-200/70 hover:bg-white/55 hover:text-[#4369A2] dark:text-[#7C8FB5] dark:hover:border-[rgba(124,132,252,0.28)] dark:hover:bg-[rgba(99,102,241,0.12)] dark:hover:text-slate-100"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-transparent text-[#7194C8] transition-default hover:border-sky-200/70 hover:bg-white/55 hover:text-[#4369A2] dark:text-[rgba(255,255,255,0.8)] dark:hover:border-[rgba(124,132,252,0.28)] dark:hover:bg-[rgba(99,102,241,0.12)] dark:hover:text-white"
       >
         <Search className="h-4 w-4" />
       </button>
 
       <button
-        className="hidden items-center rounded-full border border-transparent px-2.5 py-1 text-sm font-medium text-[#6A8EC6] transition-default hover:border-sky-200/70 hover:bg-white/55 hover:text-[#31558D] md:inline-flex dark:text-[#7C8FB5] dark:hover:border-[rgba(124,132,252,0.28)] dark:hover:bg-[rgba(99,102,241,0.12)] dark:hover:text-slate-100"
+        className="hidden items-center rounded-full border border-transparent px-2.5 py-1 text-sm font-medium text-[#6A8EC6] transition-default hover:border-sky-200/70 hover:bg-white/55 hover:text-[#31558D] md:inline-flex dark:text-[rgba(255,255,255,0.8)] dark:hover:border-[rgba(124,132,252,0.28)] dark:hover:bg-[rgba(99,102,241,0.12)] dark:hover:text-white"
       >
         Notices
       </button>
 
       <button
         aria-label="Notifications"
-        className="relative inline-flex h-8 w-8 items-center justify-center rounded-full border border-sky-200/75 bg-white/70 text-[#6287C0] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-default hover:border-sky-300 hover:bg-white dark:border-[rgba(99,102,241,0.28)] dark:bg-[rgba(28,34,66,0.95)] dark:text-[#93A4C9] dark:shadow-none dark:hover:border-[rgba(132,140,255,0.42)] dark:hover:bg-[rgba(38,44,84,0.98)]"
+        className="relative inline-flex h-8 w-8 items-center justify-center rounded-full border border-sky-200/75 bg-white/70 text-[#6287C0] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-default hover:border-sky-300 hover:bg-white dark:border-[rgba(99,102,241,0.28)] dark:bg-[rgba(28,34,66,0.95)] dark:text-[rgba(255,255,255,0.8)] dark:shadow-none dark:hover:border-[rgba(132,140,255,0.42)] dark:hover:bg-[rgba(38,44,84,0.98)]"
       >
         <Bell className="h-4 w-4" />
         <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[#E74B6A] px-1 text-[10px] font-semibold leading-none text-white">
@@ -68,7 +68,7 @@ export function UserMenu({ session }: { session: UserSession }) {
         <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/30 bg-[linear-gradient(160deg,#23283A,#111827)] text-[13px] font-semibold text-white dark:bg-[linear-gradient(160deg,#262D45,#151B2D)]">
           {initials}
         </span>
-        <span className="hidden max-w-[8rem] truncate pr-1 text-sm font-semibold text-slate-900 md:inline dark:text-slate-100">
+        <span className="hidden max-w-[8rem] truncate pr-1 text-sm font-semibold text-slate-900 md:inline dark:font-medium dark:text-white">
           {displayName}
         </span>
         <ChevronDown className="mr-1 hidden h-4 w-4 text-slate-500 md:inline dark:text-slate-400" />

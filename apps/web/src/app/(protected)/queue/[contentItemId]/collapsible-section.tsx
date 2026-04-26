@@ -22,7 +22,7 @@ export function CollapsibleSection({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className="app-surface-panel overflow-hidden rounded-xl transition-expand hover:shadow-md dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+    <div className="app-surface-panel overflow-hidden rounded-xl transition-expand hover:shadow-md dark:border-[rgba(90,108,210,0.38)]">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}

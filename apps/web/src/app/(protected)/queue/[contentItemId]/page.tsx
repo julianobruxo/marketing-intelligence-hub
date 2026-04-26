@@ -4,6 +4,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { ApprovalDecision, ApprovalStage, DesignProvider, DesignRequestStatus } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,6 +25,7 @@ import { syncDesignRequestAction } from "@/modules/design-orchestration/applicat
 import { resetDesignStateAction } from "@/modules/design-orchestration/application/reset-design-state";
 import { isSliceOneCanvaEligible } from "@/modules/design-orchestration/domain/canva-slice";
 import { DesignInitiationButton } from "./design-initiation-button";
+import { StartDesignButton } from "./start-design-button";
 import {
   NanaBananaVariationChooser,
 } from "./nano-banana-variation-chooser";
@@ -38,8 +40,14 @@ import {
   advanceToReadyForDesignAction,
   recordApprovalAction,
   recordApprovalActionWithDecision,
-  recordPostedAction,
 } from "@/modules/workflow/application/workflow-actions";
+import {
+  approveTranslationLanguageAction,
+  requestTranslationAction,
+  selectPublishLanguageAndProceedAction,
+  skipTranslationAction,
+  submitTranslationCopyAction,
+} from "@/modules/workflow/application/translation-actions";
 import { canRecordApprovalAction } from "@/modules/workflow/domain/phase-one-workflow";
 import { CollapsibleSection } from "./collapsible-section";
 import { ItemHeader } from "./item-header";
@@ -265,7 +273,11 @@ export default async function ContentItemDetailPage({
 
   // Derived data
   const latestDesignRequest = item.designRequests[0];
-  const latestAsset = item.assets[item.assets.length - 1];
+  // Exclude VIDEO assets — they are a reference URL, not a design output.
+  const latestAsset = item.assets.filter((a) => (a.assetType as string) !== "VIDEO").at(-1);
+  const existingVideoUrl =
+    item.assets.find((a) => (a.assetType as string) === "VIDEO" && !a.deletedAt)?.externalUrl ??
+    null;
   const latestSourceLink = item.sourceLinks[0];
   const latestImportReceipt = item.importReceipts[0];
   const designSyncState = getDesignSyncState(latestDesignRequest?.resultPayload);
@@ -392,8 +404,21 @@ export default async function ContentItemDetailPage({
     primaryActionKind = "waiting";
   } else if (canvaSliceReady) primaryActionKind = "design_start";
   else if (canRefreshDesign) primaryActionKind = "design_refresh";
-  else if (canvaRetryReady) primaryActionKind = "design_retry";
+  // DESIGN_READY must be checked before the operationalStatus snapshot override below.
+  // The snapshot's operationalStatus stays "READY_FOR_DESIGN" after design completes because
+  // it is only updated on reimport — checking it first would shadow the correct approve path.
   else if (item.currentStatus === "DESIGN_READY") primaryActionKind = "design_approve";
+  else if (
+    (item.currentStatus === "READY_FOR_DESIGN" || operationalStatus === "READY_FOR_DESIGN") &&
+    item.currentStatus !== "IN_DESIGN" &&
+    item.currentStatus !== "DESIGN_APPROVED" &&
+    item.currentStatus !== "READY_FOR_FINAL_REVIEW" &&
+    item.currentStatus !== "READY_TO_POST" &&
+    item.currentStatus !== "READY_TO_PUBLISH" &&
+    item.currentStatus !== "POSTED" &&
+    item.currentStatus !== "PUBLISHED_MANUALLY"
+  ) primaryActionKind = "design_start";
+  else if (canvaRetryReady) primaryActionKind = "design_retry";
   else if (item.currentStatus === "READY_FOR_FINAL_REVIEW") primaryActionKind = "final_review";
   else if (
     item.currentStatus === "READY_TO_POST" ||
@@ -409,7 +434,7 @@ export default async function ContentItemDetailPage({
   const showContinueProcessPrimary = primaryActionKind === "review";
 
   const primaryActionLabel: Record<PrimaryActionKind, string> = {
-    design_start: "Generate Design",
+    design_start: "Start Design",
     design_refresh: "Sync Design",
     design_retry: "Retry Design",
     design_approve: "Approve Design",
@@ -496,7 +521,7 @@ export default async function ContentItemDetailPage({
       />
 
       {publishedPreview ? (
-        <section className="app-surface-panel rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]">
+        <section className="app-surface-panel rounded-xl px-5 py-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-[rgba(88,108,186,0.32)] dark:bg-[rgba(23,31,58,0.78)]">
               <>
@@ -538,7 +563,7 @@ export default async function ContentItemDetailPage({
       {/* 2A — Primary action card */}
       {primaryActionKind === "waiting" ? (
         <section
-          className="app-surface-panel rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
+          className="app-surface-panel rounded-xl px-5 py-4"
           style={{ borderLeft: '4px solid #0A66C2' }}
         >
           <div className="flex items-start gap-3">
@@ -573,7 +598,7 @@ export default async function ContentItemDetailPage({
         </section>
       ) : (
         <section
-          className="app-surface-panel rounded-xl border-l-4 px-5 py-5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
+          className="app-surface-panel rounded-xl border-l-4 px-5 py-5"
           style={{ borderLeftColor: '#E11D48' }}
         >
           <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#E11D48' }}>
@@ -583,7 +608,9 @@ export default async function ContentItemDetailPage({
             {showContinueProcessPrimary ? "Continue Process" : primaryActionLabel[primaryActionKind]}
           </h2>
           <p className="mt-1.5 text-sm leading-6" style={{ color: '#64748B' }}>
-            {operationalSummary.nextStep}
+            {primaryActionKind === "design_start"
+              ? "Choose whether this post should use an image design or an uploaded video asset."
+              : operationalSummary.nextStep}
           </p>
 
           {primaryActionKind === "design_approve" && isAiVisualReadyResult && nbVariations.length > 0 && (
@@ -599,18 +626,13 @@ export default async function ContentItemDetailPage({
           {/* Primary action button(s) */}
           <div className="mt-4 flex flex-wrap gap-2">
             {primaryActionKind === "design_start" && (
-              <DesignInitiationButton
+              <StartDesignButton
                 contentItemId={item.id}
                 title={item.title}
                 author={formatContentAuthorLabel(item.profile)}
                 copy={item.copy ?? ""}
                 availableMappings={availableMappings}
-                mode="start"
-                label="Generate Design"
-                lastProvider={null}
-                lastTemplateId={null}
-                lastPresetId={null}
-                lastPrompt={null}
+                existingVideoUrl={existingVideoUrl}
                 canvaProviderMode={CANVA_PROVIDER_MODE}
                 gptImageProviderMode={GPT_IMAGE_PROVIDER_MODE}
                 nbProviderMode={NB_PROVIDER_MODE}
@@ -740,17 +762,19 @@ export default async function ContentItemDetailPage({
             )}
 
             {primaryActionKind === "post_on_li" && (
-              <form action={recordPostedAction}>
-                <input type="hidden" name="contentItemId" value={item.id} />
-                <Button
-                  type="submit"
-                  className="transition-default font-semibold"
+              <div className="flex flex-wrap items-center gap-3">
+                <Link
+                  href={`/queue/${item.id}/linkedin-preview`}
+                  className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white transition-default"
                   data-testid="post-to-linkedin-button"
-                  style={{ backgroundColor: '#0A66C2', color: 'white' }}
+                  style={{ backgroundColor: '#0A66C2' }}
                 >
                   Post to LinkedIn
-                </Button>
-              </form>
+                </Link>
+                <span className="inline-flex items-center rounded-full border border-amber-200/95 bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:border-[rgba(191,141,57,0.48)] dark:bg-[rgba(62,42,8,0.8)] dark:text-[#F1CC88]">
+                  Mock mode
+                </span>
+              </div>
             )}
 
             {primaryActionKind === "translation_approve" && (
@@ -795,10 +819,178 @@ export default async function ContentItemDetailPage({
         </section>
       )}
 
+      {/* ── Translation Setup — visible only at DESIGN_APPROVED ── */}
+      {item.currentStatus === "DESIGN_APPROVED" && (
+        <section
+          className="app-surface-panel rounded-xl px-5 py-4"
+          style={{ borderLeft: "4px solid #8B5CF6" }}
+        >
+          <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "#8B5CF6" }}>
+            Translation
+          </p>
+          <h2 className="mt-1 text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+            Does this content need translation before publishing?
+          </h2>
+          <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">
+            Design has been approved. Choose a language to translate, or skip directly to final review with English.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <form action={requestTranslationAction}>
+              <input type="hidden" name="contentItemId" value={item.id} />
+              <input type="hidden" name="language" value="PT_BR" />
+              <Button type="submit" variant="outline" className="border-violet-300 text-violet-700 hover:bg-violet-50 dark:border-violet-500/40 dark:text-violet-300 dark:hover:bg-violet-900/20">
+                Request PT-BR
+              </Button>
+            </form>
+            <form action={requestTranslationAction}>
+              <input type="hidden" name="contentItemId" value={item.id} />
+              <input type="hidden" name="language" value="FR" />
+              <Button type="submit" variant="outline" className="border-violet-300 text-violet-700 hover:bg-violet-50 dark:border-violet-500/40 dark:text-violet-300 dark:hover:bg-violet-900/20">
+                Request French
+              </Button>
+            </form>
+            <form action={skipTranslationAction}>
+              <input type="hidden" name="contentItemId" value={item.id} />
+              <Button type="submit" variant="outline" className="border-slate-300 bg-white hover:bg-slate-50 transition-default dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100" style={{ color: "#0F172A" }}>
+                English only — skip translation
+              </Button>
+            </form>
+          </div>
+        </section>
+      )}
+
+      {/* ── Translation Workflow — TRANSLATION_REQUESTED / TRANSLATION_READY ── */}
+      {(item.currentStatus === "TRANSLATION_REQUESTED" ||
+        item.currentStatus === "TRANSLATION_READY") && (() => {
+        const isPtBrActive = item.translationPtBrStatus === "REQUESTED" || item.translationPtBrStatus === "READY_FOR_APPROVAL";
+        const isFrActive = item.translationFrStatus === "REQUESTED" || item.translationFrStatus === "READY_FOR_APPROVAL";
+        const activeLang = isPtBrActive ? "PT_BR" : isFrActive ? "FR" : null;
+        const activeLangLabel = activeLang === "PT_BR" ? "PT-BR" : "French";
+        const existingCopy = activeLang === "PT_BR" ? item.translationPtBrCopy : item.translationFrCopy;
+        const isReadyForReview = item.currentStatus === "TRANSLATION_READY";
+
+        if (!activeLang) return null;
+
+        return (
+          <section
+            className="app-surface-panel rounded-xl px-5 py-5 space-y-4"
+            style={{ borderLeft: "4px solid #8B5CF6" }}
+          >
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "#8B5CF6" }}>
+                {activeLangLabel} Translation
+              </p>
+              <h2 className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                {isReadyForReview ? `${activeLangLabel} translation is ready for approval` : `Submit ${activeLangLabel} translation copy`}
+              </h2>
+              <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">
+                {isReadyForReview
+                  ? `Review the translated copy below. Approve to advance, or update the copy and resubmit.`
+                  : `Paste the ${activeLangLabel} translation of the LinkedIn copy. Once submitted it will be queued for approval.`}
+              </p>
+            </div>
+
+            <form action={submitTranslationCopyAction} className="space-y-3">
+              <input type="hidden" name="contentItemId" value={item.id} />
+              <input type="hidden" name="language" value={activeLang} />
+              <Textarea
+                name="copy"
+                defaultValue={existingCopy ?? ""}
+                placeholder={`Paste the ${activeLangLabel} translation here…`}
+                className="min-h-36 bg-white font-mono text-sm dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100"
+              />
+              <Button type="submit" className="transition-default" style={{ backgroundColor: "#8B5CF6", color: "white" }}>
+                {isReadyForReview ? "Update copy" : "Submit for approval"}
+              </Button>
+            </form>
+
+            {isReadyForReview && (
+              <div className="border-t border-slate-100 pt-4 dark:border-[rgba(88,108,186,0.24)]">
+                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-[#8B97B7]">
+                  Approve translation
+                </p>
+                <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">
+                  Requires <span className="font-semibold">Translation Approver</span> role.
+                  {activeLang === "PT_BR" && " (PT-BR: Juliano)"}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <form action={approveTranslationLanguageAction}>
+                    <input type="hidden" name="contentItemId" value={item.id} />
+                    <input type="hidden" name="language" value={activeLang} />
+                    <Button type="submit" className="transition-default" style={{ backgroundColor: "#8B5CF6", color: "white" }}>
+                      Approve {activeLangLabel} translation
+                    </Button>
+                  </form>
+                </div>
+              </div>
+            )}
+          </section>
+        );
+      })()}
+
+      {/* ── Publish Language Selector — TRANSLATION_APPROVED ── */}
+      {item.currentStatus === "TRANSLATION_APPROVED" && (() => {
+        const ptBrApproved = item.translationPtBrStatus === "APPROVED";
+        const frApproved = item.translationFrStatus === "APPROVED";
+        const approvedLangLabel = ptBrApproved ? "PT-BR" : frApproved ? "French" : null;
+
+        return (
+          <section
+            className="app-surface-panel rounded-xl px-5 py-5 space-y-4"
+            style={{ borderLeft: "4px solid #10B981" }}
+          >
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "#10B981" }}>
+                Translation Approved
+              </p>
+              <h2 className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                {approvedLangLabel ? `${approvedLangLabel} translation approved` : "Translation approved"} — select publish language
+              </h2>
+              <p className="mt-1 text-sm text-slate-500 dark:text-[#8FA1C5]">
+                Choose which language version will be used for the final post. Only approved versions are selectable.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {/* English — always available */}
+              <form action={selectPublishLanguageAndProceedAction}>
+                <input type="hidden" name="contentItemId" value={item.id} />
+                <input type="hidden" name="language" value="ENG" />
+                <Button type="submit" variant="outline" className="border-slate-300 transition-default hover:bg-slate-50 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-slate-100" style={{ color: "#0F172A" }}>
+                  Publish in English
+                </Button>
+              </form>
+
+              {/* PT-BR — only if approved */}
+              {ptBrApproved && (
+                <form action={selectPublishLanguageAndProceedAction}>
+                  <input type="hidden" name="contentItemId" value={item.id} />
+                  <input type="hidden" name="language" value="PT_BR" />
+                  <Button type="submit" className="transition-default" style={{ backgroundColor: "#10B981", color: "white" }}>
+                    Publish in PT-BR ✓
+                  </Button>
+                </form>
+              )}
+
+              {/* French — only if approved */}
+              {frApproved && (
+                <form action={selectPublishLanguageAndProceedAction}>
+                  <input type="hidden" name="contentItemId" value={item.id} />
+                  <input type="hidden" name="language" value="FR" />
+                  <Button type="submit" className="transition-default" style={{ backgroundColor: "#10B981", color: "white" }}>
+                    Publish in French ✓
+                  </Button>
+                </form>
+              )}
+            </div>
+          </section>
+        );
+      })()}
+
       {/* 2C — Blocker / waiting signal */}
       {operationalSummary.blocker ? (
         <div
-          className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
+          className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5"
           style={{ borderLeftColor: '#F59E0B', borderColor: '#FDE68A' }}
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#D97706' }} />
@@ -812,7 +1004,7 @@ export default async function ContentItemDetailPage({
       {/* 2C — Secondary actions */}
       {!operationalSummary.blocker && operationalStatus === "LATE" ? (
         <div
-          className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
+          className="app-surface-panel flex items-start gap-3 rounded-xl border-l-4 px-4 py-3.5"
           style={{ borderLeftColor: '#E11D48', borderColor: '#FDA4AF' }}
         >
           <Clock className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: '#E11D48' }} />
@@ -827,7 +1019,7 @@ export default async function ContentItemDetailPage({
 
       <section
         id="secondary-actions"
-        className="app-surface-panel space-y-4 rounded-xl px-5 py-4 dark:border-[rgba(88,108,186,0.3)] dark:bg-[linear-gradient(145deg,rgba(12,17,37,0.96),rgba(10,14,31,0.92))]"
+        className="app-surface-panel space-y-4 rounded-xl px-5 py-4"
         style={{ animationDelay: '100ms' }}
       >
         <div>
@@ -1155,6 +1347,62 @@ export default async function ContentItemDetailPage({
           )}
         </div>
       </CollapsibleSection>
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* ZONE 5 — Publish attempts                                         */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {item.publishAttempts.length > 0 && (
+        <CollapsibleSection
+          label="Publish attempts"
+          badge={`${item.publishAttempts.length}`}
+        >
+          <div className="divide-y divide-slate-100 dark:divide-[rgba(255,255,255,0.05)]">
+            {item.publishAttempts.map((attempt) => (
+              <div key={attempt.id} className="px-5 py-4 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center rounded-full border border-amber-200/95 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:border-[rgba(191,141,57,0.48)] dark:bg-[rgba(62,42,8,0.8)] dark:text-[#F1CC88]">
+                    {attempt.mode}
+                  </span>
+                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                    attempt.status === "POSTED"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-[rgba(63,177,135,0.3)] dark:bg-[rgba(16,48,34,0.5)] dark:text-emerald-300"
+                      : attempt.status === "FAILED"
+                        ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-[rgba(244,63,94,0.25)] dark:bg-[rgba(127,29,29,0.2)] dark:text-rose-300"
+                        : "border-slate-200 bg-slate-50 text-slate-600 dark:border-[rgba(104,120,186,0.3)] dark:bg-[rgba(34,42,75,0.5)] dark:text-slate-300"
+                  }`}>
+                    {attempt.status}
+                  </span>
+                  <span className="text-xs text-slate-400 dark:text-slate-500">
+                    {formatDateTime(attempt.createdAt)}
+                  </span>
+                </div>
+                <div className="text-sm text-slate-700 dark:text-slate-300">
+                  <span className="font-medium">{attempt.targetLabel}</span>
+                  {" · "}
+                  <span className="text-slate-500 dark:text-slate-400">{attempt.selectedPublishLanguage}</span>
+                  {attempt.assetType && (
+                    <>{" · "}<span className="text-slate-500 dark:text-slate-400">{attempt.assetType}</span></>
+                  )}
+                </div>
+                {attempt.linkedinPostUrl && (
+                  <a
+                    href={attempt.linkedinPostUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400 hover:underline"
+                  >
+                    View post
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+                {attempt.errorMessage && (
+                  <p className="text-xs text-rose-600 dark:text-rose-400">{attempt.errorMessage}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
 
     </div>
   );

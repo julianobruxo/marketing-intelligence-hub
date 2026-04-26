@@ -205,16 +205,6 @@ export async function initiateDesignRequestAction(formData: FormData) {
 
   if (!contentItem) return;
 
-  if (
-    !isSliceOneCanvaEligible({
-      profile: contentItem.profile,
-      contentType: contentItem.contentType,
-      sourceLocale: contentItem.sourceLocale,
-    })
-  ) {
-    return;
-  }
-
   const activeDesignRequestExists = contentItem.designRequests.some(
     (request) =>
       request.status === DesignRequestStatus.REQUESTED ||
@@ -253,6 +243,16 @@ export async function initiateDesignRequestAction(formData: FormData) {
   let referenceAssets: DesignReferenceAsset[] = [];
 
   if (provider === DesignProvider.CANVA) {
+    if (
+      !isSliceOneCanvaEligible({
+        profile: contentItem.profile,
+        contentType: contentItem.contentType,
+        sourceLocale: contentItem.sourceLocale,
+      })
+    ) {
+      return;
+    }
+
     const templateId = String(formData.get("templateId") ?? "");
 
     const profileMapping = await prisma.profileTemplateMapping.findFirst({
