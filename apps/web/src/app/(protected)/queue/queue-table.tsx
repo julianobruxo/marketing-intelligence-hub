@@ -372,12 +372,50 @@ function getRowSurfaceClasses(item: DecoratedItem, quietRow: boolean, awaitingDe
   }
 }
 
-function getActionShellClasses(_item: DecoratedItem, _quietRow: boolean, _awaitingDesign: boolean) {
-  return `border-[rgba(167,139,250,0.25)] bg-[rgba(167,139,250,0.12)] text-[#7c5cfc] group-hover:border-[rgba(167,139,250,0.4)] ${DARK_SHELL}`;
+function getActionShellClasses(item: DecoratedItem, quietRow: boolean, awaitingDesign: boolean) {
+  if (quietRow) {
+    return `border-[rgba(16,185,129,0.3)] bg-[rgba(16,185,129,0.12)] text-[#047857] group-hover:border-[rgba(16,185,129,0.5)] ${DARK_SHELL}`;
+  }
+  if (awaitingDesign) {
+    return `border-[rgba(167,139,250,0.25)] bg-[rgba(167,139,250,0.12)] text-[#7c5cfc] group-hover:border-[rgba(167,139,250,0.4)] ${DARK_SHELL}`;
+  }
+  switch (item.lane) {
+    case "NEEDS_ACTION":
+      return `border-[rgba(251,146,60,0.3)] bg-[rgba(251,146,60,0.12)] text-[#ea6d0e] group-hover:border-[rgba(251,146,60,0.5)] ${DARK_SHELL}`;
+    case "BLOCKED":
+      return `border-[rgba(245,158,11,0.3)] bg-[rgba(245,158,11,0.12)] text-[#b45309] group-hover:border-[rgba(245,158,11,0.5)] ${DARK_SHELL}`;
+    case "FAILED":
+      return `border-[rgba(244,63,94,0.3)] bg-[rgba(244,63,94,0.12)] text-[#be123c] group-hover:border-[rgba(244,63,94,0.5)] ${DARK_SHELL}`;
+    case "IN_PROGRESS":
+      return `border-[rgba(59,130,246,0.3)] bg-[rgba(59,130,246,0.12)] text-[#1d4ed8] group-hover:border-[rgba(59,130,246,0.5)] ${DARK_SHELL}`;
+    case "READY":
+      return `border-[rgba(16,185,129,0.3)] bg-[rgba(16,185,129,0.12)] text-[#047857] group-hover:border-[rgba(16,185,129,0.5)] ${DARK_SHELL}`;
+    default:
+      return `border-[rgba(167,139,250,0.25)] bg-[rgba(167,139,250,0.12)] text-[#7c5cfc] group-hover:border-[rgba(167,139,250,0.4)] ${DARK_SHELL}`;
+  }
 }
 
-function getActionIconClasses(_item: DecoratedItem, _quietRow: boolean, _awaitingDesign: boolean) {
-  return `border-[rgba(167,139,250,0.3)] bg-[rgba(167,139,250,0.15)] text-[#7c5cfc] group-hover:bg-[rgba(167,139,250,0.25)] ${DARK_ICON}`;
+function getActionIconClasses(item: DecoratedItem, quietRow: boolean, awaitingDesign: boolean) {
+  if (quietRow) {
+    return `border-[rgba(16,185,129,0.35)] bg-[rgba(16,185,129,0.18)] text-[#047857] group-hover:bg-[rgba(16,185,129,0.28)] ${DARK_ICON}`;
+  }
+  if (awaitingDesign) {
+    return `border-[rgba(167,139,250,0.3)] bg-[rgba(167,139,250,0.15)] text-[#7c5cfc] group-hover:bg-[rgba(167,139,250,0.25)] ${DARK_ICON}`;
+  }
+  switch (item.lane) {
+    case "NEEDS_ACTION":
+      return `border-[rgba(251,146,60,0.35)] bg-[rgba(251,146,60,0.18)] text-[#ea6d0e] group-hover:bg-[rgba(251,146,60,0.28)] ${DARK_ICON}`;
+    case "BLOCKED":
+      return `border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.18)] text-[#b45309] group-hover:bg-[rgba(245,158,11,0.28)] ${DARK_ICON}`;
+    case "FAILED":
+      return `border-[rgba(244,63,94,0.35)] bg-[rgba(244,63,94,0.18)] text-[#be123c] group-hover:bg-[rgba(244,63,94,0.28)] ${DARK_ICON}`;
+    case "IN_PROGRESS":
+      return `border-[rgba(59,130,246,0.35)] bg-[rgba(59,130,246,0.18)] text-[#1d4ed8] group-hover:bg-[rgba(59,130,246,0.28)] ${DARK_ICON}`;
+    case "READY":
+      return `border-[rgba(16,185,129,0.35)] bg-[rgba(16,185,129,0.18)] text-[#047857] group-hover:bg-[rgba(16,185,129,0.28)] ${DARK_ICON}`;
+    default:
+      return `border-[rgba(167,139,250,0.3)] bg-[rgba(167,139,250,0.15)] text-[#7c5cfc] group-hover:bg-[rgba(167,139,250,0.25)] ${DARK_ICON}`;
+  }
 }
 
 function QueueRow({ item, index }: { item: DecoratedItem; index: number }) {

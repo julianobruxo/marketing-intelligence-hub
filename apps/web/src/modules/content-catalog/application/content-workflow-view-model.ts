@@ -524,7 +524,7 @@ function buildQueueLaneDetails(item: QueueContentItem) {
 
       if (eligibility.status === "OUT_OF_SCOPE") {
         return {
-          lane: "BLOCKED" as const,
+          lane: "NEEDS_ACTION" as const,
           nextActionLabel: "Design not available in current phase",
           waitingOn: "Internal operator",
           blocker: eligibility.reasons.join(" "),
@@ -535,7 +535,7 @@ function buildQueueLaneDetails(item: QueueContentItem) {
 
       if (item.queueMappingAvailability === "MISSING") {
         return {
-          lane: "BLOCKED" as const,
+          lane: "NEEDS_ACTION" as const,
           nextActionLabel: "Resolve template route before design",
           waitingOn: "Internal operator",
           blocker: "No active template mapping is available for this profile, content type, and locale.",
@@ -600,10 +600,11 @@ function buildQueueLaneDetails(item: QueueContentItem) {
     case ContentStatus.READY_FOR_DESIGN:
     case ContentStatus.WAITING_FOR_COPY: {
       const eligibility = getDesignEligibilityFromQueue(item);
+      const isReadyForDesign = item.currentStatus === ContentStatus.READY_FOR_DESIGN;
 
       if (eligibility.status === "OUT_OF_SCOPE") {
         return {
-          lane: "BLOCKED" as const,
+          lane: isReadyForDesign ? ("NEEDS_ACTION" as const) : ("BLOCKED" as const),
           nextActionLabel: "Design not available in current phase",
           waitingOn: "Internal operator",
           blocker: eligibility.reasons.join(" "),
@@ -614,7 +615,7 @@ function buildQueueLaneDetails(item: QueueContentItem) {
 
       if (eligibility.status === "MISSING_PREREQUISITES") {
         return {
-          lane: "BLOCKED" as const,
+          lane: isReadyForDesign ? ("NEEDS_ACTION" as const) : ("BLOCKED" as const),
           nextActionLabel: "Complete missing content before design",
           waitingOn: "Copywriter",
           blocker: eligibility.reasons.join(" "),

@@ -10,6 +10,7 @@ const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
     ContentStatus.IN_DESIGN,
     ContentStatus.DESIGN_REQUESTED, // legacy compat
     ContentStatus.DESIGN_FAILED,
+    ContentStatus.DESIGN_READY,     // video reference path — bypasses design generation
   ],
 
   // ── New design ──────────────────────────────────────────────────────────
@@ -45,11 +46,13 @@ const allowedTransitions: Record<ContentStatus, ContentStatus[]> = {
     ContentStatus.READY_FOR_DESIGN,
     ContentStatus.IN_DESIGN,
     ContentStatus.READY_FOR_FINAL_REVIEW,
+    ContentStatus.DESIGN_READY,      // video reference path after design rejection
   ],
   [ContentStatus.DESIGN_FAILED]: [
     ContentStatus.DESIGN_REQUESTED,
     ContentStatus.IN_DESIGN,
     ContentStatus.READY_FOR_DESIGN,
+    ContentStatus.DESIGN_READY,     // video reference path after failed design attempt
   ],
   [ContentStatus.DESIGN_READY]: [ContentStatus.DESIGN_APPROVED, ContentStatus.CHANGES_REQUESTED],
   [ContentStatus.DESIGN_APPROVED]: [

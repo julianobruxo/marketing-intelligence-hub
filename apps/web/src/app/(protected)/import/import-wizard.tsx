@@ -177,8 +177,8 @@ function SpreadsheetResultRow({
       className={cn(
         "group flex cursor-pointer items-start justify-between gap-4 rounded-[22px] border px-5 py-4 text-left transition-default",
         selected
-          ? "border-slate-950 bg-white shadow-[0_18px_45px_-28px_rgba(15,23,42,0.45)] dark:border-[rgba(132,144,226,0.58)] dark:bg-[rgba(17,25,50,0.9)] dark:shadow-[0_18px_45px_-28px_rgba(48,62,140,0.5)]"
-          : "border-slate-200/90 bg-white/90 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_16px_38px_-30px_rgba(15,23,42,0.3)] dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(14,21,44,0.78)] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:bg-[rgba(20,29,56,0.86)]",
+          ? "border-[#7c5cfc]/60 bg-white shadow-[0_4px_20px_rgba(124,92,252,0.1)] dark:border-[rgba(132,144,226,0.58)] dark:bg-[rgba(17,25,50,0.9)] dark:shadow-[0_18px_45px_-28px_rgba(48,62,140,0.5)]"
+          : "border-[rgba(124,92,252,0.12)] bg-white/90 hover:-translate-y-0.5 hover:border-[rgba(124,92,252,0.25)] hover:shadow-[0_16px_38px_-30px_rgba(124,92,252,0.12)] dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(14,21,44,0.78)] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:bg-[rgba(20,29,56,0.86)]",
       )}
     >
       <input type="checkbox" checked={selected} onChange={onToggle} className="sr-only" />
@@ -188,7 +188,7 @@ function SpreadsheetResultRow({
           className={cn(
             "mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-default",
             selected
-              ? "border-slate-950 bg-slate-950 text-white dark:border-[rgba(132,144,226,0.6)] dark:bg-[rgba(95,102,236,0.86)]"
+              ? "border-[#7c5cfc] bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white dark:border-[rgba(132,144,226,0.6)] dark:bg-[rgba(95,102,236,0.86)]"
               : "border-slate-200 bg-slate-50 text-slate-500 group-hover:border-slate-300 group-hover:bg-white dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(23,31,58,0.7)] dark:text-[#95A7CB] dark:group-hover:border-[rgba(124,138,214,0.46)]",
           )}
         >
@@ -244,8 +244,8 @@ function StagedSpreadsheetRow({
       className={cn(
         "group flex cursor-pointer items-start justify-between gap-4 rounded-[22px] border px-5 py-4 text-left transition-default",
         selected
-          ? "border-slate-950 bg-white shadow-[0_18px_45px_-28px_rgba(15,23,42,0.45)] dark:border-[rgba(132,144,226,0.58)] dark:bg-[rgba(17,25,50,0.9)] dark:shadow-[0_18px_45px_-28px_rgba(48,62,140,0.5)]"
-          : "border-slate-200/90 bg-white/90 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_16px_38px_-30px_rgba(15,23,42,0.3)] dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(14,21,44,0.78)] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:bg-[rgba(20,29,56,0.86)]",
+          ? "border-[#7c5cfc]/60 bg-white shadow-[0_4px_20px_rgba(124,92,252,0.1)] dark:border-[rgba(132,144,226,0.58)] dark:bg-[rgba(17,25,50,0.9)] dark:shadow-[0_18px_45px_-28px_rgba(48,62,140,0.5)]"
+          : "border-[rgba(124,92,252,0.12)] bg-white/90 hover:-translate-y-0.5 hover:border-[rgba(124,92,252,0.25)] hover:shadow-[0_16px_38px_-30px_rgba(124,92,252,0.12)] dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(14,21,44,0.78)] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:bg-[rgba(20,29,56,0.86)]",
       )}
     >
       <input type="checkbox" checked={selected} onChange={onToggle} className="sr-only" />
@@ -255,7 +255,7 @@ function StagedSpreadsheetRow({
           className={cn(
             "mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-default",
             selected
-              ? "border-slate-950 bg-slate-950 text-white dark:border-[rgba(132,144,226,0.6)] dark:bg-[rgba(95,102,236,0.86)]"
+              ? "border-[#7c5cfc] bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white dark:border-[rgba(132,144,226,0.6)] dark:bg-[rgba(95,102,236,0.86)]"
               : "border-slate-200 bg-slate-50 text-slate-500 group-hover:border-slate-300 group-hover:bg-white dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(23,31,58,0.7)] dark:text-[#95A7CB] dark:group-hover:border-[rgba(124,138,214,0.46)]",
           )}
         >
@@ -484,7 +484,7 @@ function ConfirmModal({
                   className={cn(
                     "rounded-2xl border px-3 py-3 text-left text-sm transition-default",
                     !isDark && (active
-                      ? "border-slate-950 bg-white text-slate-950 shadow-sm"
+                      ? "border-[#7c5cfc]/60 bg-white text-[#5b3fd4] shadow-sm"
                       : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"),
                   )}
                   style={isDark ? (active ? {
@@ -541,16 +541,8 @@ function ConfirmModal({
               type="button"
               onClick={onConfirm}
               disabled={confirming}
-              className="transition-default disabled:opacity-50 dark:hover:brightness-110"
+              className="rounded-[10px] border-none bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] font-semibold text-white shadow-[0_4px_16px_rgba(124,92,252,0.3)] transition-default hover:brightness-110 disabled:opacity-50"
               data-testid="import-button"
-              style={isDark ? {
-                background: "linear-gradient(135deg, #7c5cfc 0%, #9b6dff 100%)",
-                color: "white",
-                border: "none",
-                borderRadius: "10px",
-                fontWeight: 600,
-                boxShadow: "0 4px 16px rgba(124,92,252,0.4)",
-              } : { backgroundColor: "#E8584A", color: "white" }}
             >
               {confirming ? (
                 <>
@@ -1002,11 +994,11 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
     <>
       <div className="space-y-8 import-theme">
         <section className="app-surface-panel relative overflow-hidden rounded-[34px] px-6 py-6 sm:px-8 sm:py-8">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(232,88,74,0.12),_transparent_36%),radial-gradient(circle_at_bottom_left,_rgba(10,102,194,0.08),_transparent_34%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(124,92,252,0.08),_transparent_36%),radial-gradient(circle_at_bottom_left,_rgba(167,139,250,0.06),_transparent_34%)]" />
           <div className="relative grid gap-8 xl:grid-cols-[minmax(0,1.35fr)_320px] xl:items-start">
             <div className="space-y-6">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className="rounded-full bg-slate-950 px-3 py-1 text-white hover:bg-slate-950 dark:bg-indigo-500/25 dark:text-[#C8D1FF]">
+                <Badge className="rounded-full bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] px-3 py-1 text-white hover:brightness-110 dark:bg-indigo-500/25 dark:text-[#C8D1FF]">
                   Command Center
                 </Badge>
                 <Badge
@@ -1070,8 +1062,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
                   }}
                   disabled={isScanning}
                   data-testid="scan-button"
-                  className="h-12 min-w-[10rem] rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 disabled:opacity-50"
-                  style={{ backgroundColor: "#E8584A", color: "white" }}
+                  className="h-12 min-w-[10rem] rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 hover:brightness-110 disabled:opacity-50 bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white"
                 >
                   {isScanning ? (
                     <>
@@ -1101,8 +1092,8 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
               </div>
             </div>
 
-            <aside className="rounded-[28px] border border-slate-200 bg-slate-950 p-5 text-white shadow-[0_22px_60px_-40px_rgba(15,23,42,0.65)] dark:border-[rgba(102,119,193,0.38)] dark:bg-[linear-gradient(180deg,rgba(18,24,48,0.95),rgba(11,16,34,0.92))] dark:shadow-[0_26px_68px_-42px_rgba(43,54,122,0.58)]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+            <aside className="rounded-[28px] border border-[rgba(124,92,252,0.2)] bg-[linear-gradient(160deg,#f5f3ff,#ede9fe)] p-5 shadow-[0_8px_32px_-8px_rgba(124,92,252,0.15)] dark:border-[rgba(102,119,193,0.38)] dark:bg-[linear-gradient(180deg,rgba(18,24,48,0.95),rgba(11,16,34,0.92))] dark:shadow-[0_26px_68px_-42px_rgba(43,54,122,0.58)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#7c5cfc]/80 dark:text-white/55">
                 System status
               </p>
               <div className="mt-5 space-y-3">
@@ -1111,16 +1102,16 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
                   { label: "Staged", value: stagedCount, detail: stagedCount > 0 ? "Ready for review" : "Nothing staged yet" },
                   { label: "Posted", value: alreadyPublishedCount, detail: "Already recognized as done" },
                 ].map((stat) => (
-                  <div key={stat.label} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                  <div key={stat.label} className="flex items-center justify-between rounded-2xl border border-[rgba(124,92,252,0.12)] bg-white/60 px-4 py-3 dark:border-white/10 dark:bg-white/5">
                     <div>
-                      <p className="text-xs font-medium text-white/60">{stat.label}</p>
-                      <p className="mt-1 text-xs text-white/45">{stat.detail}</p>
+                      <p className="text-xs font-medium text-[#5b3fd4]/70 dark:text-white/60">{stat.label}</p>
+                      <p className="mt-1 text-xs text-[#7c5cfc]/60 dark:text-white/45">{stat.detail}</p>
                     </div>
-                    <span className="text-2xl font-semibold tracking-tight text-white">{stat.value}</span>
+                    <span className="text-2xl font-semibold tracking-tight text-[#1F2E57] dark:text-white">{stat.value}</span>
                   </div>
                 ))}
               </div>
-              <p className="mt-5 text-sm leading-6 text-white/60">
+              <p className="mt-5 text-sm leading-6 text-[#5b3fd4]/70 dark:text-white/60">
                 Scan remotely, review calmly, and only send validated rows forward.
               </p>
             </aside>
@@ -1198,7 +1189,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
                     className={cn(
                       "rounded-full border px-3.5 py-2 text-xs font-semibold transition-default",
                       isActive
-                        ? "border-slate-950 bg-slate-950 text-white shadow-sm"
+                        ? "border-transparent bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white shadow-[0_2px_10px_rgba(124,92,252,0.3)]"
                         : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 dark:border-[rgba(88,108,186,0.3)] dark:bg-[rgba(22,30,58,0.84)] dark:text-[#95A7CB] dark:hover:border-[rgba(124,138,214,0.46)] dark:hover:bg-[rgba(27,36,67,0.94)]",
                     )}
                   >
@@ -1227,8 +1218,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
                 onClick={() => setModalOpen(true)}
                 disabled={selectedSpreadsheetIds.size === 0}
                 data-testid="import-selected-button"
-                className="h-11 rounded-xl px-4 font-semibold transition-default hover:-translate-y-0.5 disabled:opacity-50"
-                style={{ backgroundColor: "#E8584A", color: "white" }}
+                className="h-11 rounded-xl px-4 font-semibold transition-default hover:-translate-y-0.5 hover:brightness-110 disabled:opacity-50 bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white"
               >
                 Import selected
               </Button>
@@ -1274,8 +1264,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
                       void performScan();
                     }}
                     disabled={isScanning}
-                    className="h-11 rounded-xl px-4 font-semibold transition-default hover:-translate-y-0.5 disabled:opacity-50"
-                    style={{ backgroundColor: "#E8584A", color: "white" }}
+                    className="h-11 rounded-xl px-4 font-semibold transition-default hover:-translate-y-0.5 hover:brightness-110 disabled:opacity-50 bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white"
                   >
                     Scan Drive
                   </Button>
@@ -1338,8 +1327,7 @@ export function ImportWizard({ driveProviderMode }: ImportWizardProps) {
                   onClick={() => void sendSelectedToWorkflowQueue()}
                   disabled={selectedStagedIds.size === 0 || isSending}
                   data-testid="send-to-workflow-queue-button"
-                  className="h-12 rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 disabled:opacity-50"
-                  style={{ backgroundColor: "#E8584A", color: "white" }}
+                  className="h-12 rounded-xl px-5 text-sm font-semibold shadow-sm transition-default hover:-translate-y-0.5 hover:brightness-110 disabled:opacity-50 bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white"
                 >
                   {isSending ? (
                     <>

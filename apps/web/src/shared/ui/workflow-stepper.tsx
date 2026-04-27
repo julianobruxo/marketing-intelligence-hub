@@ -57,7 +57,7 @@ export function WorkflowStepper(props: WorkflowStepperProps) {
                     isComplete
                       ? "border-emerald-500 bg-emerald-500 text-white"
                       : isCurrent
-                        ? "border-slate-950 bg-slate-950 text-white shadow-sm dark:border-indigo-400 dark:bg-indigo-500"
+                        ? "border-[#7c5cfc] bg-[linear-gradient(135deg,#7c5cfc,#a78bfa)] text-white shadow-sm dark:border-indigo-400 dark:bg-indigo-500"
                       : "border-slate-300 bg-white text-slate-500 dark:border-[rgba(88,108,186,0.34)] dark:bg-[rgba(22,30,58,0.84)] dark:text-[#95A7CB]",
                   )}
                 >

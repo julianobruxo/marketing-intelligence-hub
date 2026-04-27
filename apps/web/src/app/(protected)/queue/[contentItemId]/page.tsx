@@ -26,6 +26,7 @@ import { resetDesignStateAction } from "@/modules/design-orchestration/applicati
 import { isSliceOneCanvaEligible } from "@/modules/design-orchestration/domain/canva-slice";
 import { DesignInitiationButton } from "./design-initiation-button";
 import { StartDesignButton } from "./start-design-button";
+import { ChangeVideoButton } from "./change-video-button";
 import {
   NanaBananaVariationChooser,
 } from "./nano-banana-variation-chooser";
@@ -321,9 +322,14 @@ export default async function ContentItemDetailPage({
     item.currentStatus === "CHANGES_REQUESTED" &&
     latestDesignRequest?.status === DesignRequestStatus.REJECTED;
 
-  // AI visual variations (shown in DESIGN_READY state for GPT Image or Nano Banana requests)
+  // True when the item's visual asset is a video reference (not a generated image).
+  const hasVideoAsset = existingVideoUrl !== null;
+
+  // AI visual variations (shown in DESIGN_READY state for GPT Image or Nano Banana requests).
+  // Excluded for video items — the video reference is the asset, no variation chooser needed.
   const isAiVisualReadyResult =
     item.currentStatus === "DESIGN_READY" &&
+    !hasVideoAsset &&
     (latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE ||
       latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL);
   const nbVariations = isAiVisualReadyResult
@@ -345,8 +351,9 @@ export default async function ContentItemDetailPage({
       ? Boolean(selectedDesignVariationId)
       : Boolean(latestAsset.externalUrl || latestAsset.storagePath)
     : false;
+  // Don't offer reset for video-approved items — the video reference is the asset.
   const canResetApprovedDesign =
-    item.currentStatus === "DESIGN_APPROVED" && !hasSelectedDesignAsset;
+    item.currentStatus === "DESIGN_APPROVED" && !hasSelectedDesignAsset && !hasVideoAsset;
 
   // Action availability
   const canvaEligible = isSliceOneCanvaEligible({
@@ -437,7 +444,7 @@ export default async function ContentItemDetailPage({
     design_start: "Start Design",
     design_refresh: "Sync Design",
     design_retry: "Retry Design",
-    design_approve: "Approve Design",
+    design_approve: hasVideoAsset ? "Review Video Asset" : "Approve Design",
     translation_approve: "Review Translation",
     final_review: "Final Review",
     post_on_li: "Post to LinkedIn",
@@ -610,7 +617,9 @@ export default async function ContentItemDetailPage({
           <p className="mt-1.5 text-sm leading-6" style={{ color: '#64748B' }}>
             {primaryActionKind === "design_start"
               ? "Choose whether this post should use an image design or an uploaded video asset."
-              : operationalSummary.nextStep}
+              : primaryActionKind === "design_approve" && hasVideoAsset
+                ? "Review the video reference and confirm it as the visual asset for this post."
+                : operationalSummary.nextStep}
           </p>
 
           {primaryActionKind === "design_approve" && isAiVisualReadyResult && nbVariations.length > 0 && (
@@ -713,7 +722,49 @@ export default async function ContentItemDetailPage({
               </div>
             )}
 
-            {primaryActionKind === "design_approve" && (
+            {primaryActionKind === "design_approve" && hasVideoAsset && (
+              <div className="mt-4 space-y-3">
+                {/* Video reference summary */}
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 space-y-2 dark:border-[rgba(255,255,255,0.08)] dark:bg-[rgba(255,255,255,0.03)]">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#8B97B7]">
+                    Current video reference
+                  </p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 break-all">
+                    {existingVideoUrl}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a
+                      href={existingVideoUrl ?? "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-sky-600 hover:underline dark:text-sky-400"
+                    >
+                      Open video
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                    <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:border-[rgba(63,177,135,0.3)] dark:bg-[rgba(16,48,34,0.5)] dark:text-emerald-300">
+                      Confirmed @zazmic.com only
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <form action={approveDesignReadyAction}>
+                    <input type="hidden" name="contentItemId" value={item.id} />
+                    <Button
+                      type="submit"
+                      className="transition-default"
+                      data-testid="approve-design-button"
+                      style={{ backgroundColor: '#E11D48', color: 'white' }}
+                    >
+                      Approve video
+                    </Button>
+                  </form>
+                  <ChangeVideoButton contentItemId={item.id} existingVideoUrl={existingVideoUrl} />
+                </div>
+              </div>
+            )}
+
+            {primaryActionKind === "design_approve" && !hasVideoAsset && (
               <div className="space-y-3">
                 <form action={approveDesignReadyAction}>
                   <input type="hidden" name="contentItemId" value={item.id} />

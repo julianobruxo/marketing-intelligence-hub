@@ -608,10 +608,10 @@ export async function approveDesignReadyAction(formData: FormData) {
         orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
         take: 1,
       },
+      // Fetch all assets (no take:1) so we can detect a VIDEO asset.
       assets: {
         where: { deletedAt: null },
         orderBy: [{ slideIndex: "asc" }, { createdAt: "desc" }],
-        take: 1,
       },
     },
   });
@@ -621,10 +621,19 @@ export async function approveDesignReadyAction(formData: FormData) {
   }
 
   const latestDesignRequest = contentItem.designRequests[0];
-  const latestAsset = contentItem.assets[0];
+
+  // VIDEO asset takes priority — its presence means the operator chose the video path.
+  const videoAsset = contentItem.assets.find(
+    (a) => a.assetType === AssetType.VIDEO && a.assetStatus === AssetStatus.READY,
+  );
+  const latestAsset = videoAsset ?? contentItem.assets[0];
+
+  // Variation selection is required for AI-generated images (GPT Image / Nano Banana).
+  // The VIDEO path bypasses this — the video reference itself is the selected asset.
   const requiresVariationSelection =
-    latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE ||
-    latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL;
+    !videoAsset &&
+    (latestDesignRequest?.designProvider === DesignProvider.GPT_IMAGE ||
+      latestDesignRequest?.designProvider === DesignProvider.AI_VISUAL);
 
   if (
     requiresVariationSelection &&
@@ -636,7 +645,7 @@ export async function approveDesignReadyAction(formData: FormData) {
   assertContentStatusTransition({
     currentStatus: ContentStatus.DESIGN_READY,
     nextStatus: ContentStatus.DESIGN_APPROVED,
-    reason: "design approval recorded",
+    reason: videoAsset ? "video asset approved" : "design approval recorded",
   });
 
   await prisma.$transaction(async (tx) => {
@@ -647,7 +656,9 @@ export async function approveDesignReadyAction(formData: FormData) {
       },
     });
 
-    if (latestDesignRequest) {
+    if (latestDesignRequest && !videoAsset) {
+      // Only update the design request status for image/design paths.
+      // For video, the design request (if any) was a prior failed attempt — leave it as-is.
       await tx.designRequest.update({
         where: { id: latestDesignRequest.id },
         data: {
@@ -662,7 +673,9 @@ export async function approveDesignReadyAction(formData: FormData) {
         fromStatus: ContentStatus.DESIGN_READY,
         toStatus: ContentStatus.DESIGN_APPROVED,
         actorEmail: session.email,
-        note: "Design approved for downstream publishing preparation.",
+        note: videoAsset
+          ? "Video asset approved for downstream publishing preparation."
+          : "Design approved for downstream publishing preparation.",
       },
     });
   });
